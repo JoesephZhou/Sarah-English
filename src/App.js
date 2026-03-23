@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const SARAH_PHOTO = process.env.PUBLIC_URL + "/sarah.jpg";
 
+// Google Cloud TTS - en-CA-CasimirNeural (Canadian female, very natural)
+const GOOGLE_TTS_VOICE = { languageCode: "en-CA", name: "en-CA-Neural2-C", ssmlGender: "FEMALE" };
+
 const SYSTEM_PROMPT = `You are "Sarah", a warm and friendly Canadian English tutor based in Toronto. You speak naturally and conversationally, like a real friend — not a formal teacher. You occasionally say "eh", mention Tim Hortons, hockey, poutine, and other Canadian cultural references naturally.
 
 IMPORTANT: This is a SPOKEN conversation. Keep responses SHORT — 2-4 sentences max. No bullet points, no lists, just natural speech.
@@ -43,12 +46,50 @@ const TOPICS = [
 
 const typeColor = { slang:"#FF6B6B", phrasal_verb:"#4ECDC4", idiom:"#FFE66D", cultural:"#A8E6CF" };
 
-const speak = (text, onEnd) => {
+// Google Cloud TTS — real human voice
+const speakGoogle = async (text, googleKey, onEnd) => {
+  try {
+    const res = await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${googleKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          input: { text },
+          voice: GOOGLE_TTS_VOICE,
+          audioConfig: {
+            audioEncoding: "MP3",
+            speakingRate: 0.95,
+            pitch: 1.0,
+            effectsProfileId: ["headphone-class-device"]
+          }
+        })
+      }
+    );
+    const data = await res.json();
+    if (!data.audioContent) throw new Error("No audio");
+    const audio = new Audio("data:audio/mp3;base64," + data.audioContent);
+    audio.onended = onEnd;
+    audio.onerror = () => { if (onEnd) onEnd(); };
+    audio.play();
+    return audio;
+  } catch (e) {
+    console.warn("Google TTS failed, falling back:", e);
+    speakFallback(text, onEnd);
+    return null;
+  }
+};
+
+// Fallback: browser Web Speech API
+const speakFallback = (text, onEnd) => {
   window.speechSynthesis.cancel();
   const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = "en-CA"; utt.rate = 0.92; utt.pitch = 1.1;
+  utt.lang = "en-CA"; utt.rate = 0.92; utt.pitch = 1.05;
   const voices = window.speechSynthesis.getVoices();
-  const v = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Fiona")));
+  const v = voices.find(v => v.lang.startsWith("en") && (
+    v.name.includes("Samantha") || v.name.includes("Karen") ||
+    v.name.includes("Fiona") || v.name.includes("Moira")
+  ));
   if (v) utt.voice = v;
   if (onEnd) utt.onend = onEnd;
   window.speechSynthesis.speak(utt);
@@ -57,6 +98,8 @@ const speak = (text, onEnd) => {
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("sarahApiKey") || "");
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [googleKey, setGoogleKey] = useState(() => localStorage.getItem("sarahGoogleKey") || "");
+  const [googleKeyInput, setGoogleKeyInput] = useState("");
   const [screen, setScreen] = useState("home");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -84,6 +127,7 @@ export default function App() {
   const holdingRef = useRef(false);
   const liveTextRef = useRef("");
   const mouthIntervalRef = useRef(null);
+  const currentAudioRef = useRef(null);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages]);
   useEffect(() => { liveTextRef.current = liveText; }, [liveText]);
@@ -102,15 +146,36 @@ export default function App() {
 
   const startMouthAnim = () => {
     clearInterval(mouthIntervalRef.current);
-    mouthIntervalRef.current = setInterval(() => { setMouthOpen(p => !p); }, 180);
+    mouthIntervalRef.current = setInterval(() => { setMouthOpen(p => !p); }, 200);
   };
   const stopMouthAnim = () => { clearInterval(mouthIntervalRef.current); setMouthOpen(false); };
+
+  // Unified speak — Google TTS if key exists, else browser fallback
+  const speak = useCallback((text, onEnd) => {
+    const gKey = localStorage.getItem("sarahGoogleKey") || "";
+    if (gKey) {
+      speakGoogle(text, gKey, onEnd).then(audio => { currentAudioRef.current = audio; });
+    } else {
+      speakFallback(text, onEnd);
+    }
+  }, []);
+
+  const stopSpeaking = useCallback(() => {
+    window.speechSynthesis.cancel();
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+    }
+  }, []);
 
   const saveKey = () => {
     const k = apiKeyInput.trim();
     if (!k.startsWith("sk-ant-")) { alert("需要 Anthropic API Key (sk-ant-...)"); return; }
     localStorage.setItem("sarahApiKey", k);
     setApiKey(k);
+    const gk = googleKeyInput.trim();
+    if (gk) { localStorage.setItem("sarahGoogleKey", gk); setGoogleKey(gk); }
   };
 
   const addNewWords = useCallback((words) => {
@@ -163,11 +228,11 @@ export default function App() {
     speak(parsed.message, () => { setSpeaking(false); stopMouthAnim(); setEmotion("neutral"); });
     const np = { ...profile, exchanges: profile.exchanges + 1 };
     setStudentProfile(np); localStorage.setItem("sarahProfile", JSON.stringify(np));
-  }, [addNewWords]);
+  }, [addNewWords, speak]);
 
   const startChat = async (topic) => {
     setCurrentTopic(topic); setMessages([]); setConversationHistory([]); setQuizActive(null);
-    setScreen("chat"); setLoading(true); window.speechSynthesis.cancel();
+    setScreen("chat"); setLoading(true); stopSpeaking();
     const fc = JSON.parse(localStorage.getItem("sarahCards") || "[]");
     const rl = JSON.parse(localStorage.getItem("sarahReview") || "[]");
     const sp = JSON.parse(localStorage.getItem("sarahProfile") || '{"level":"beginner","exchanges":0}');
@@ -201,7 +266,7 @@ export default function App() {
 
   const startRecording = async () => {
     if (loading || speaking || holdingRef.current) return;
-    window.speechSynthesis.cancel(); setSpeaking(false); stopMouthAnim();
+    stopSpeaking(); setSpeaking(false); stopMouthAnim();
     holdingRef.current = true; setRecording(true); setLiveText(""); liveTextRef.current = "";
     await startVol();
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -249,22 +314,40 @@ export default function App() {
     thinking: "brightness(0.95) saturate(0.9)"
   };
 
+  // ── API KEY SCREEN ──
   if (!apiKey) return (
     <div style={{minHeight:"100dvh",background:"linear-gradient(160deg,#0a0e1a,#0d1f3c)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"32px 24px",fontFamily:"Georgia,serif",color:"#e8e0d0"}}>
       <div style={{width:"90px",height:"90px",borderRadius:"50%",overflow:"hidden",marginBottom:"16px",border:"3px solid #c8102e",boxShadow:"0 0 30px rgba(200,16,46,0.4)"}}>
         <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top"}} alt="Sarah"/>
       </div>
       <div style={{fontSize:"26px",fontWeight:"700",marginBottom:"4px"}}>Sarah</div>
-      <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"36px",letterSpacing:"2px",textTransform:"uppercase"}}>Canadian Voice Tutor · Toronto</div>
+      <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"32px",letterSpacing:"2px",textTransform:"uppercase"}}>Canadian Voice Tutor · Toronto</div>
       <div style={{width:"100%",maxWidth:"360px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"24px",padding:"28px"}}>
+
+        {/* Anthropic Key */}
         <div style={{fontSize:"14px",fontWeight:"600",marginBottom:"6px"}}>🔑 Anthropic API Key</div>
-        <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"18px",lineHeight:"1.7"}}>前往 <strong style={{color:"#4ECDC4"}}>console.anthropic.com</strong> 免费获取，只存本地。</div>
-        <input type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveKey()} placeholder="sk-ant-api03-..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"12px"}}/>
-        <button onClick={saveKey} style={{width:"100%",background:"linear-gradient(135deg,#c8102e,#ff4757)",border:"none",borderRadius:"12px",padding:"14px",color:"white",fontSize:"16px",fontWeight:"600",cursor:"pointer"}}>开始练习 🎤</button>
+        <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"10px",lineHeight:"1.6"}}>前往 <strong style={{color:"#4ECDC4"}}>console.anthropic.com</strong> 获取</div>
+        <input type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} placeholder="sk-ant-api03-..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"20px",boxSizing:"border-box"}}/>
+
+        {/* Google TTS Key */}
+        <div style={{fontSize:"14px",fontWeight:"600",marginBottom:"6px"}}>🎙️ Google TTS Key <span style={{fontSize:"11px",color:"#5a6a7a",fontWeight:"400"}}>(可选，真人语音)</span></div>
+        <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"6px",lineHeight:"1.6"}}>
+          前往 <strong style={{color:"#4ECDC4"}}>console.cloud.google.com</strong> → Text-to-Speech API → 创建 Key
+        </div>
+        <div style={{fontSize:"11px",color:"#5a8a5a",background:"rgba(78,205,196,0.08)",border:"1px solid rgba(78,205,196,0.2)",borderRadius:"8px",padding:"7px 10px",marginBottom:"10px",lineHeight:"1.6"}}>
+          ✅ 每月免费 100万字符 · 加拿大真人女声
+        </div>
+        <input type="password" value={googleKeyInput} onChange={e=>setGoogleKeyInput(e.target.value)} placeholder="AIza..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"18px",boxSizing:"border-box"}}/>
+
+        <button onClick={saveKey} style={{width:"100%",background:"linear-gradient(135deg,#c8102e,#ff4757)",border:"none",borderRadius:"12px",padding:"14px",color:"white",fontSize:"16px",fontWeight:"600",cursor:"pointer"}}>
+          {googleKeyInput ? "开始练习 (真人语音) 🎤" : "开始练习 🎤"}
+        </button>
+        {!googleKeyInput && <div style={{textAlign:"center",fontSize:"11px",color:"#4a5a6a",marginTop:"10px"}}>没有 Google Key？也可以先用浏览器语音</div>}
       </div>
     </div>
   );
 
+  // ── HOME ──
   if (screen === "home") return (
     <div style={{height:"100dvh",display:"flex",flexDirection:"column",background:"linear-gradient(160deg,#0a0e1a,#0d1f3c)",fontFamily:"Georgia,serif",color:"#e8e0d0",overflow:"hidden"}}>
       <div style={{background:"rgba(255,255,255,0.03)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
@@ -274,7 +357,9 @@ export default function App() {
           </div>
           <div>
             <div style={{fontSize:"18px",fontWeight:"700"}}>Sarah</div>
-            <div style={{fontSize:"10px",color:"#7a8a9a",letterSpacing:"1.5px",textTransform:"uppercase"}}>Voice Tutor · Toronto 🎤</div>
+            <div style={{fontSize:"10px",color:googleKey?"#4ECDC4":"#7a8a9a",letterSpacing:"1.5px",textTransform:"uppercase"}}>
+              {googleKey ? "真人语音 · Toronto 🎤" : "Voice Tutor · Toronto 🎤"}
+            </div>
           </div>
         </div>
         <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
@@ -309,16 +394,17 @@ export default function App() {
     </div>
   );
 
+  // ── VOICE CHAT ──
   if (screen === "chat") return (
     <div style={{height:"100dvh",display:"flex",flexDirection:"column",background:"#080c18",fontFamily:"Georgia,serif",color:"#e8e0d0",userSelect:"none"}}>
       <div style={{background:"rgba(255,255,255,0.03)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"11px 15px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
-        <button onClick={()=>{window.speechSynthesis.cancel();stopMouthAnim();setScreen("home");}} style={{background:"none",border:"none",color:"#7a8a9a",cursor:"pointer",fontSize:"20px",padding:"4px 8px 4px 0",WebkitTapHighlightColor:"transparent"}}>←</button>
+        <button onClick={()=>{stopSpeaking();stopMouthAnim();setScreen("home");}} style={{background:"none",border:"none",color:"#7a8a9a",cursor:"pointer",fontSize:"20px",padding:"4px 8px 4px 0",WebkitTapHighlightColor:"transparent"}}>←</button>
         <div style={{position:"relative",flexShrink:0}}>
           <div style={{width:"44px",height:"44px",borderRadius:"50%",overflow:"hidden",border:`2px solid ${speaking?"#ff4757":"rgba(200,16,46,0.5)"}`,boxShadow:speaking?"0 0 0 4px rgba(200,16,46,0.2), 0 0 0 8px rgba(200,16,46,0.08)":"none",transition:"all 0.3s"}}>
             <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion],transition:"filter 0.5s"}} alt="Sarah"/>
           </div>
           {speaking && (
-            <div style={{position:"absolute",bottom:"4px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"16px":"12px",height:mouthOpen?"8px":"3px",background:"rgba(180,80,80,0.85)",borderRadius:"0 0 8px 8px",transition:"all 0.15s",border:"1px solid rgba(255,255,255,0.3)"}}/>
+            <div style={{position:"absolute",bottom:"4px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"16px":"12px",height:mouthOpen?"8px":"3px",background:"rgba(180,80,80,0.85)",borderRadius:"0 0 8px 8px",transition:"all 0.18s",border:"1px solid rgba(255,255,255,0.3)"}}/>
           )}
         </div>
         <div style={{flex:1,minWidth:0}}>
@@ -341,7 +427,7 @@ export default function App() {
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{background:"rgba(255,255,255,0.06)",borderRadius:"4px 16px 16px 16px",padding:"10px 13px",fontSize:"15px",lineHeight:"1.65",border:"1px solid rgba(255,255,255,0.08)"}}>
                     {msg.message}
-                    <button onClick={()=>{setSpeaking(true);startMouthAnim();speak(msg.message,()=>{setSpeaking(false);stopMouthAnim();});}} style={{marginLeft:"8px",background:"none",border:"none",cursor:"pointer",fontSize:"13px",opacity:0.5,verticalAlign:"middle",WebkitTapHighlightColor:"transparent"}}>🔊</button>
+                    <button onClick={()=>{stopSpeaking();setSpeaking(true);startMouthAnim();speak(msg.message,()=>{setSpeaking(false);stopMouthAnim();});}} style={{marginLeft:"8px",background:"none",border:"none",cursor:"pointer",fontSize:"13px",opacity:0.5,verticalAlign:"middle",WebkitTapHighlightColor:"transparent"}}>🔊</button>
                   </div>
                   {msg.teachingNote&&<div style={{marginTop:"5px",padding:"6px 10px",background:"rgba(255,230,109,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"12px",color:"#c8b87a"}}>💡 {msg.teachingNote}</div>}
                   {msg.newWords?.length>0&&<div style={{marginTop:"6px",display:"flex",flexWrap:"wrap",gap:"5px"}}>{msg.newWords.map((w,j)=><div key={j} style={{background:`${typeColor[w.type]||"#4ECDC4"}18`,border:`1px solid ${typeColor[w.type]||"#4ECDC4"}50`,borderRadius:"14px",padding:"3px 10px",fontSize:"11px",color:typeColor[w.type]||"#4ECDC4"}}>✨ <strong>{w.word}</strong> — {w.definition}</div>)}</div>}
@@ -364,7 +450,7 @@ export default function App() {
         {speaking&&(
           <div style={{position:"relative",width:"80px",height:"80px",borderRadius:"50%",overflow:"hidden",border:"3px solid #ff4757",boxShadow:"0 0 0 6px rgba(200,16,46,0.2), 0 0 0 12px rgba(200,16,46,0.08)"}}>
             <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion]}} alt="Sarah"/>
-            <div style={{position:"absolute",bottom:"10px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"22px":"14px",height:mouthOpen?"10px":"4px",background:"rgba(160,60,60,0.9)",borderRadius:"0 0 11px 11px",transition:"all 0.15s",border:"1px solid rgba(255,200,200,0.4)"}}/>
+            <div style={{position:"absolute",bottom:"10px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"22px":"14px",height:mouthOpen?"10px":"4px",background:"rgba(160,60,60,0.9)",borderRadius:"0 0 11px 11px",transition:"all 0.18s",border:"1px solid rgba(255,200,200,0.4)"}}/>
           </div>
         )}
         {quizActive&&!recording&&!loading&&!speaking&&<div style={{padding:"5px 14px",background:"rgba(78,205,196,0.1)",border:"1px solid rgba(78,205,196,0.25)",borderRadius:"18px",fontSize:"12px",color:"#4ECDC4"}}>🎯 Say <strong>"{quizActive}"</strong></div>}
@@ -383,6 +469,7 @@ export default function App() {
     </div>
   );
 
+  // ── FLASHCARDS ──
   return (
     <div style={{height:"100dvh",display:"flex",flexDirection:"column",background:"#0a0e1a",fontFamily:"Georgia,serif",color:"#e8e0d0"}}>
       <div style={{background:"rgba(255,255,255,0.03)",borderBottom:"1px solid rgba(255,255,255,0.08)",padding:"14px 18px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
@@ -404,7 +491,7 @@ export default function App() {
                 {card.needsReview&&<div style={{position:"absolute",top:"8px",right:"8px",background:"#FF6B6B",borderRadius:"50%",width:"7px",height:"7px"}}/>}
                 <div style={{display:"inline-block",padding:"2px 7px",borderRadius:"8px",background:`${typeColor[card.type]||"#4ECDC4"}20`,color:typeColor[card.type]||"#4ECDC4",fontSize:"9px",letterSpacing:"1px",textTransform:"uppercase",marginBottom:"7px",fontFamily:"monospace",alignSelf:"flex-start"}}>{card.type?.replace("_"," ")||"word"}</div>
                 <div style={{fontSize:"15px",fontWeight:"700",marginBottom:"5px"}}>{card.word}</div>
-                {flippedCard===i?<div><div style={{fontSize:"12px",color:"#a0b0c0",marginBottom:"6px",lineHeight:"1.5"}}>{card.definition}</div><div style={{fontSize:"11px",color:"#5a7a8a",fontStyle:"italic",lineHeight:"1.5"}}>"{card.example}"</div><button onClick={e=>{e.stopPropagation();speak(card.word+". "+card.example);}} style={{marginTop:"8px",background:"rgba(255,255,255,0.08)",border:"none",borderRadius:"8px",padding:"4px 10px",color:"#a0b0c0",fontSize:"11px",cursor:"pointer",fontFamily:"inherit",WebkitTapHighlightColor:"transparent"}}>🔊 Listen</button></div>:<div style={{fontSize:"11px",color:"#4a5a6a"}}>Tap to reveal</div>}
+                {flippedCard===i?<div><div style={{fontSize:"12px",color:"#a0b0c0",marginBottom:"6px",lineHeight:"1.5"}}>{card.definition}</div><div style={{fontSize:"11px",color:"#5a7a8a",fontStyle:"italic",lineHeight:"1.5"}}>"{card.example}"</div><button onClick={e=>{e.stopPropagation();speak(card.word+". "+card.example,null);}} style={{marginTop:"8px",background:"rgba(255,255,255,0.08)",border:"none",borderRadius:"8px",padding:"4px 10px",color:"#a0b0c0",fontSize:"11px",cursor:"pointer",fontFamily:"inherit",WebkitTapHighlightColor:"transparent"}}>🔊 Listen</button></div>:<div style={{fontSize:"11px",color:"#4a5a6a"}}>Tap to reveal</div>}
               </div>
             ))}
           </div>

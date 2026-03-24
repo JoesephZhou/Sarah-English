@@ -13,7 +13,7 @@ Compiled successfully.
 
 File sizes after gzip:
 
-  53.84 kB (+281 B)  build\static\js\main.c45d07aa.js
+  54.04 kB (+204 B)  build\static\js\main.f7f1cb85.js
 
 The project was built assuming it is hosted at /Sarah-English/.
 You can control this with the homepage field in your package.json.

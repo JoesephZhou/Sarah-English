@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 
 const SARAH_PHOTO = process.env.PUBLIC_URL + "/sarah.jpg";
 
@@ -204,6 +204,8 @@ export default function App() {
     setConversationHistory(newHist); convHistRef.current = newHist;
     if (parsed.emotion) setEmotion(parsed.emotion);
     if (parsed.newWords?.length) addNewWords(parsed.newWords);
+    // Wrap-up: also import wrapUpWords into flashcards
+    if (parsed.wrapUp && parsed.wrapUpWords?.length) addNewWords(parsed.wrapUpWords);
     if (parsed.needsReview && parsed.reviewWord) {
       setReviewList(prev => { if (prev.find(r=>r.word===parsed.reviewWord)) return prev; const u=[...prev,{word:parsed.reviewWord,needsReview:true}]; localStorage.setItem("sarahReview",JSON.stringify(u)); return u; });
       setFlashcards(prev => { const u=prev.map(f=>f.word===parsed.reviewWord?{...f,needsReview:true}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
@@ -410,7 +412,7 @@ export default function App() {
         <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top"}} alt="Sarah"/>
       </div>
       <div style={{fontSize:"26px",fontWeight:"700",marginBottom:"4px"}}>Sarah</div>
-      <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"32px",letterSpacing:"2px",textTransform:"uppercase"}}>Canadian Voice Tutor · Toronto</div>
+      <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"32px",letterSpacing:"2px",textTransform:"uppercase"}}>Winnipeg Casual English Coach</div>
       <div style={{width:"100%",maxWidth:"360px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"24px",padding:"28px"}}>
         <div style={{fontSize:"14px",fontWeight:"600",marginBottom:"6px"}}>🔑 Anthropic API Key</div>
         <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"8px",lineHeight:"1.6"}}>前往 <strong style={{color:"#4ECDC4"}}>console.anthropic.com</strong> 获取，只存本地。</div>
@@ -503,7 +505,9 @@ export default function App() {
                     {msg.message}
                     <button onClick={()=>{stopSpeaking();setSpeaking(true);startMouthAnim();speak(msg.message,()=>{setSpeaking(false);stopMouthAnim();});}} style={{marginLeft:"8px",background:"none",border:"none",cursor:"pointer",fontSize:"13px",opacity:0.5,verticalAlign:"middle",WebkitTapHighlightColor:"transparent"}}>🔊</button>
                   </div>
+                  {msg.correction&&<div style={{marginTop:"6px",padding:"8px 12px",background:"rgba(255,165,0,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"13px",color:"#d4a843",lineHeight:"1.5"}}>💡 {msg.correction}</div>}
                   {msg.teachingNote&&<div style={{marginTop:"5px",padding:"6px 10px",background:"rgba(255,230,109,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"12px",color:"#c8b87a"}}>💡 {msg.teachingNote}</div>}
+                  {msg.wrapUp&&msg.wrapUpWords?.length>0&&<div style={{marginTop:"8px",background:"rgba(78,205,196,0.06)",border:"1px solid rgba(78,205,196,0.2)",borderRadius:"10px",padding:"10px 12px"}}><div style={{fontSize:"11px",letterSpacing:"1px",color:"#4ECDC4",marginBottom:"6px",fontFamily:"monospace"}}>📦 SESSION WORDS</div>{msg.wrapUpWords.map((w,j)=><div key={j} style={{marginBottom:"5px",fontSize:"12px",color:"#a0c0b8"}}><strong style={{color:"#e8e0d0"}}>{w.word}</strong> <span style={{color:"#5a7a7a",fontSize:"11px"}}>[{w.type}]</span> — {w.definition}</div>)}</div>}
                   {msg.newWords?.length>0&&<div style={{marginTop:"6px",display:"flex",flexWrap:"wrap",gap:"5px"}}>{msg.newWords.map((w,j)=><div key={j} style={{background:`${typeColor[w.type]||"#4ECDC4"}18`,border:`1px solid ${typeColor[w.type]||"#4ECDC4"}50`,borderRadius:"14px",padding:"3px 10px",fontSize:"11px",color:typeColor[w.type]||"#4ECDC4"}}>✨ <strong>{w.word}</strong> — {w.definition}</div>)}</div>}
                   {msg.quizResult&&<div style={{marginTop:"5px",padding:"6px 10px",background:msg.quizResult==="correct"?"rgba(168,230,207,0.1)":"rgba(255,107,107,0.1)",border:`1px solid ${msg.quizResult==="correct"?"rgba(168,230,207,0.3)":"rgba(255,107,107,0.3)"}`,borderRadius:"8px",fontSize:"11px",color:msg.quizResult==="correct"?"#A8E6CF":"#FF6B6B"}}>{msg.quizResult==="correct"?"✅ Great!":msg.needsReview?"📌 Added to review!":"💪 Keep it up!"}</div>}
                 </div>

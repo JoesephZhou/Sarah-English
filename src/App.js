@@ -2,9 +2,6 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const SARAH_PHOTO = process.env.PUBLIC_URL + "/sarah.jpg";
 
-// Google Cloud TTS - en-CA-CasimirNeural (Canadian female, very natural)
-const GOOGLE_TTS_VOICE = { languageCode: "en-CA", name: "en-CA-Neural2-C", ssmlGender: "FEMALE" };
-
 const SYSTEM_PROMPT = `You are "Sarah", a warm and friendly Canadian English tutor based in Toronto. You speak naturally and conversationally, like a real friend — not a formal teacher. You occasionally say "eh", mention Tim Hortons, hockey, poutine, and other Canadian cultural references naturally.
 
 IMPORTANT: This is a SPOKEN conversation. Keep responses SHORT — 2-4 sentences max. No bullet points, no lists, just natural speech.
@@ -46,91 +43,94 @@ const TOPICS = [
 
 const typeColor = { slang:"#FF6B6B", phrasal_verb:"#4ECDC4", idiom:"#FFE66D", cultural:"#A8E6CF" };
 
-// Google Cloud TTS — real human voice
-const speakGoogle = async (text, googleKey, onEnd) => {
+// VAD silence threshold — send after this many ms of quiet
+const VAD_SILENCE_MS = 1500;
+// Minimum speech before we consider it worth sending
+const MIN_SPEECH_MS = 400;
+
+const speakAnthropic = async (text, apiKey, onEnd) => {
   try {
-    const res = await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${googleKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          input: { text },
-          voice: GOOGLE_TTS_VOICE,
-          audioConfig: {
-            audioEncoding: "MP3",
-            speakingRate: 0.95,
-            pitch: 1.0,
-            effectsProfileId: ["headphone-class-device"]
-          }
-        })
-      }
-    );
-    const data = await res.json();
-    if (!data.audioContent) throw new Error("No audio");
-    const audio = new Audio("data:audio/mp3;base64," + data.audioContent);
-    audio.onended = onEnd;
-    audio.onerror = () => { if (onEnd) onEnd(); };
-    audio.play();
+    const res = await fetch("https://api.anthropic.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({ model: "tts-1", voice: "en-US-luna", input: text, speed: 0.95 })
+    });
+    if (!res.ok) throw new Error(`TTS ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => { URL.revokeObjectURL(url); if (onEnd) onEnd(); };
+    audio.onerror  = () => { URL.revokeObjectURL(url); if (onEnd) onEnd(); };
+    await audio.play();
     return audio;
-  } catch (e) {
-    console.warn("Google TTS failed, falling back:", e);
+  } catch(e) {
+    console.warn("TTS fallback:", e);
     speakFallback(text, onEnd);
     return null;
   }
 };
 
-// Fallback: browser Web Speech API
 const speakFallback = (text, onEnd) => {
   window.speechSynthesis.cancel();
   const utt = new SpeechSynthesisUtterance(text);
   utt.lang = "en-CA"; utt.rate = 0.92; utt.pitch = 1.05;
-  const voices = window.speechSynthesis.getVoices();
-  const v = voices.find(v => v.lang.startsWith("en") && (
-    v.name.includes("Samantha") || v.name.includes("Karen") ||
-    v.name.includes("Fiona") || v.name.includes("Moira")
-  ));
+  const v = window.speechSynthesis.getVoices().find(v =>
+    v.lang.startsWith("en") && (v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Fiona"))
+  );
   if (v) utt.voice = v;
   if (onEnd) utt.onend = onEnd;
   window.speechSynthesis.speak(utt);
 };
 
 export default function App() {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("sarahApiKey") || "");
+  const [apiKey, setApiKey]       = useState(() => localStorage.getItem("sarahApiKey") || "");
   const [apiKeyInput, setApiKeyInput] = useState("");
-  const [googleKey, setGoogleKey] = useState(() => localStorage.getItem("sarahGoogleKey") || "");
-  const [googleKeyInput, setGoogleKeyInput] = useState("");
-  const [screen, setScreen] = useState("home");
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
+  const [screen, setScreen]       = useState("home");
+  const [messages, setMessages]   = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [speaking, setSpeaking]   = useState(false);
   const [recording, setRecording] = useState(false);
-  const [liveText, setLiveText] = useState("");
-  const [emotion, setEmotion] = useState("neutral");
+  const [liveText, setLiveText]   = useState("");
+  const [vadState, setVadState]   = useState("idle"); // "idle" | "listening" | "silence" | "sending"
+  const [emotion, setEmotion]     = useState("neutral");
   const [mouthOpen, setMouthOpen] = useState(false);
+  const [volumeLevel, setVolumeLevel] = useState(0);
   const [flashcards, setFlashcards] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahCards") || "[]"); } catch { return []; } });
   const [reviewList, setReviewList] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahReview") || "[]"); } catch { return []; } });
-  const [currentTopic, setCurrentTopic] = useState(null);
-  const [flippedCard, setFlippedCard] = useState(null);
-  const [filterMode, setFilterMode] = useState("all");
+  const [currentTopic, setCurrentTopic]   = useState(null);
+  const [flippedCard, setFlippedCard]     = useState(null);
+  const [filterMode, setFilterMode]       = useState("all");
   const [conversationHistory, setConversationHistory] = useState([]);
   const [studentProfile, setStudentProfile] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahProfile") || '{"level":"beginner","exchanges":0}'); } catch { return {level:"beginner",exchanges:0}; } });
   const [quizActive, setQuizActive] = useState(null);
-  const [volumeLevel, setVolumeLevel] = useState(0);
   const [streak, setStreak] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahStreak") || '{"days":0,"lastDate":""}'); } catch { return {days:0,lastDate:""}; } });
-  const messagesEndRef = useRef(null);
-  const recognitionRef = useRef(null);
-  const audioCtxRef = useRef(null);
-  const analyserRef = useRef(null);
-  const animFrameRef = useRef(null);
-  const streamRef = useRef(null);
-  const holdingRef = useRef(false);
-  const liveTextRef = useRef("");
+
+  const messagesEndRef   = useRef(null);
+  const recognitionRef   = useRef(null);
+  const audioCtxRef      = useRef(null);
+  const analyserRef      = useRef(null);
+  const animFrameRef     = useRef(null);
+  const streamRef        = useRef(null);
+  const currentAudioRef  = useRef(null);
   const mouthIntervalRef = useRef(null);
-  const currentAudioRef = useRef(null);
+  const liveTextRef      = useRef("");
+  const vadTimerRef      = useRef(null);      // silence countdown timer
+  const speechStartRef   = useRef(null);      // timestamp when speech started
+  const isRecordingRef   = useRef(false);     // sync ref for callbacks
+  const quizActiveRef    = useRef(null);
+  const convHistRef      = useRef([]);
+  const profileRef       = useRef(studentProfile);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages]);
   useEffect(() => { liveTextRef.current = liveText; }, [liveText]);
+  useEffect(() => { quizActiveRef.current = quizActive; }, [quizActive]);
+  useEffect(() => { convHistRef.current = conversationHistory; }, [conversationHistory]);
+  useEffect(() => { profileRef.current = studentProfile; }, [studentProfile]);
   useEffect(() => { window.speechSynthesis.getVoices(); window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices(); }, []);
 
   useEffect(() => {
@@ -138,23 +138,21 @@ export default function App() {
     if (streak.lastDate !== today) {
       const yesterday = new Date(Date.now() - 86400000).toDateString();
       const newDays = streak.lastDate === yesterday ? streak.days + 1 : 1;
-      const newStreak = { days: newDays, lastDate: today };
-      setStreak(newStreak);
-      localStorage.setItem("sarahStreak", JSON.stringify(newStreak));
+      const s = { days: newDays, lastDate: today };
+      setStreak(s); localStorage.setItem("sarahStreak", JSON.stringify(s));
     }
   }, []);
 
   const startMouthAnim = () => {
     clearInterval(mouthIntervalRef.current);
-    mouthIntervalRef.current = setInterval(() => { setMouthOpen(p => !p); }, 200);
+    mouthIntervalRef.current = setInterval(() => setMouthOpen(p => !p), 200);
   };
   const stopMouthAnim = () => { clearInterval(mouthIntervalRef.current); setMouthOpen(false); };
 
-  // Unified speak — Google TTS if key exists, else browser fallback
   const speak = useCallback((text, onEnd) => {
-    const gKey = localStorage.getItem("sarahGoogleKey") || "";
-    if (gKey) {
-      speakGoogle(text, gKey, onEnd).then(audio => { currentAudioRef.current = audio; });
+    const key = localStorage.getItem("sarahApiKey") || "";
+    if (key) {
+      speakAnthropic(text, key, onEnd).then(a => { currentAudioRef.current = a; });
     } else {
       speakFallback(text, onEnd);
     }
@@ -172,10 +170,7 @@ export default function App() {
   const saveKey = () => {
     const k = apiKeyInput.trim();
     if (!k.startsWith("sk-ant-")) { alert("需要 Anthropic API Key (sk-ant-...)"); return; }
-    localStorage.setItem("sarahApiKey", k);
-    setApiKey(k);
-    const gk = googleKeyInput.trim();
-    if (gk) { localStorage.setItem("sarahGoogleKey", gk); setGoogleKey(gk); }
+    localStorage.setItem("sarahApiKey", k); setApiKey(k);
   };
 
   const addNewWords = useCallback((words) => {
@@ -194,7 +189,7 @@ export default function App() {
     const withNote = [...history.slice(0, -1), { role: last.role, content: last.content + (note ? "\n" + note : "") }];
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type":"application/json", "x-api-key": key, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+      headers: { "Content-Type":"application/json", "x-api-key":key, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
       body: JSON.stringify({ model:"claude-opus-4-5", max_tokens:600, system:SYSTEM_PROMPT, messages:withNote })
     });
     const data = await res.json();
@@ -202,54 +197,57 @@ export default function App() {
     return data.content[0].text;
   };
 
-  const processResponse = useCallback((text, history, currentQuiz, profile) => {
-    let parsed; try { parsed = JSON.parse(text); } catch { parsed = { message: text, newWords:[], emotion:"neutral" }; }
+  const processResponse = useCallback((text, history, profile) => {
+    let parsed; try { parsed = JSON.parse(text); } catch { parsed = { message:text, newWords:[], emotion:"neutral" }; }
     setMessages(prev => [...prev, { role:"sarah", ...parsed }]);
-    setConversationHistory([...history, { role:"assistant", content:text }]);
+    const newHist = [...history, { role:"assistant", content:text }];
+    setConversationHistory(newHist); convHistRef.current = newHist;
     if (parsed.emotion) setEmotion(parsed.emotion);
     if (parsed.newWords?.length) addNewWords(parsed.newWords);
     if (parsed.needsReview && parsed.reviewWord) {
-      setReviewList(prev => {
-        if (prev.find(r => r.word === parsed.reviewWord)) return prev;
-        const updated = [...prev, { word: parsed.reviewWord, needsReview: true }];
-        localStorage.setItem("sarahReview", JSON.stringify(updated));
-        return updated;
-      });
-      setFlashcards(prev => { const u = prev.map(f => f.word === parsed.reviewWord ? {...f, needsReview:true} : f); localStorage.setItem("sarahCards", JSON.stringify(u)); return u; });
+      setReviewList(prev => { if (prev.find(r=>r.word===parsed.reviewWord)) return prev; const u=[...prev,{word:parsed.reviewWord,needsReview:true}]; localStorage.setItem("sarahReview",JSON.stringify(u)); return u; });
+      setFlashcards(prev => { const u=prev.map(f=>f.word===parsed.reviewWord?{...f,needsReview:true}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
     }
-    if (parsed.quizResult === "correct" && currentQuiz) {
-      setReviewList(prev => { const u = prev.filter(r => r.word !== currentQuiz); localStorage.setItem("sarahReview", JSON.stringify(u)); return u; });
-      setFlashcards(prev => { const u = prev.map(f => f.word === currentQuiz ? {...f,needsReview:false} : f); localStorage.setItem("sarahCards", JSON.stringify(u)); return u; });
+    if (parsed.quizResult==="correct" && quizActiveRef.current) {
+      setReviewList(prev => { const u=prev.filter(r=>r.word!==quizActiveRef.current); localStorage.setItem("sarahReview",JSON.stringify(u)); return u; });
+      setFlashcards(prev => { const u=prev.map(f=>f.word===quizActiveRef.current?{...f,needsReview:false}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
     }
-    if (parsed.quizWord) setQuizActive(parsed.quizWord);
-    else if (parsed.quizResult) setQuizActive(null);
-    setSpeaking(true);
-    startMouthAnim();
+    if (parsed.quizWord) { setQuizActive(parsed.quizWord); quizActiveRef.current = parsed.quizWord; }
+    else if (parsed.quizResult) { setQuizActive(null); quizActiveRef.current = null; }
+    setSpeaking(true); startMouthAnim();
     speak(parsed.message, () => { setSpeaking(false); stopMouthAnim(); setEmotion("neutral"); });
     const np = { ...profile, exchanges: profile.exchanges + 1 };
-    setStudentProfile(np); localStorage.setItem("sarahProfile", JSON.stringify(np));
+    setStudentProfile(np); profileRef.current = np; localStorage.setItem("sarahProfile", JSON.stringify(np));
   }, [addNewWords, speak]);
 
-  const startChat = async (topic) => {
-    setCurrentTopic(topic); setMessages([]); setConversationHistory([]); setQuizActive(null);
-    setScreen("chat"); setLoading(true); stopSpeaking();
-    const fc = JSON.parse(localStorage.getItem("sarahCards") || "[]");
-    const rl = JSON.parse(localStorage.getItem("sarahReview") || "[]");
-    const sp = JSON.parse(localStorage.getItem("sarahProfile") || '{"level":"beginner","exchanges":0}');
-    const init = `Start a spoken conversation about "${topic.title}" (${topic.hint}). Level: ${sp.level}, exchanges: ${sp.exchanges}. Learned: ${fc.map(f=>f.word).join(", ")||"none"}. Review: ${rl.map(r=>r.word).join(", ")||"none"}. Keep it short and natural for speaking.`;
-    const history = [{ role:"user", content:init }];
+  // ── VAD: submit whatever was captured ──
+  const submitSpeech = useCallback(async () => {
+    const final = liveTextRef.current.trim();
+    setLiveText(""); liveTextRef.current = "";
+    setVadState("idle");
+    if (!final) return;
+
+    // Show user message
+    setMessages(prev => [...prev, { role:"user", message:final }]);
+    setLoading(true);
+
+    const key = localStorage.getItem("sarahApiKey") || "";
+    const fc = JSON.parse(localStorage.getItem("sarahCards")||"[]");
+    const rl = JSON.parse(localStorage.getItem("sarahReview")||"[]");
+    const sp = profileRef.current;
+    const note = `[exchanges=${sp.exchanges+1}, learned:${fc.map(f=>f.word).join(",")||"none"}, review:${rl.map(r=>r.word).join(",")||"none"}]`;
+    const newHist = [...convHistRef.current, { role:"user", content:final }];
     try {
-      const text = await callSarah(history, "", apiKey);
-      processResponse(text, history, null, sp);
+      const text = await callSarah(newHist, note, key);
+      processResponse(text, newHist, sp);
     } catch(e) {
-      const fallback = { role:"sarah", message:"Hey! I'm Sarah, your Canadian English tutor. Ready to chat, eh? 🍁", emotion:"happy" };
-      setMessages([fallback]); setSpeaking(true); startMouthAnim();
-      speak(fallback.message, () => { setSpeaking(false); stopMouthAnim(); });
+      setMessages(prev => [...prev, { role:"sarah", message:"Sorry, connection hiccup! Try again, eh? 😅" }]);
     }
     setLoading(false);
-  };
+  }, [callSarah, processResponse]);
 
-  const startVol = async () => {
+  // ── Volume analyser tick ──
+  const startVolAnalyser = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -258,63 +256,154 @@ export default function App() {
       analyserRef.current.fftSize = 256;
       audioCtxRef.current.createMediaStreamSource(stream).connect(analyserRef.current);
       const data = new Uint8Array(analyserRef.current.frequencyBinCount);
-      const tick = () => { if (!holdingRef.current) return; analyserRef.current.getByteFrequencyData(data); setVolumeLevel(Math.min(data.reduce((a,b)=>a+b,0)/data.length/40,1)); animFrameRef.current = requestAnimationFrame(tick); };
+      const tick = () => {
+        if (!isRecordingRef.current) return;
+        analyserRef.current.getByteFrequencyData(data);
+        const vol = Math.min(data.reduce((a,b)=>a+b,0)/data.length/40, 1);
+        setVolumeLevel(vol);
+
+        // VAD: is user speaking right now?
+        const isSpeaking = vol > 0.06;
+        if (isSpeaking) {
+          if (!speechStartRef.current) speechStartRef.current = Date.now();
+          // Reset silence timer on each active frame
+          clearTimeout(vadTimerRef.current);
+          setVadState("listening");
+          vadTimerRef.current = setTimeout(() => {
+            // Silence detected — check we had enough speech
+            const dur = speechStartRef.current ? Date.now() - speechStartRef.current : 0;
+            if (dur >= MIN_SPEECH_MS && liveTextRef.current.trim()) {
+              setVadState("sending");
+              submitSpeech();
+            }
+            speechStartRef.current = null;
+          }, VAD_SILENCE_MS);
+        }
+        animFrameRef.current = requestAnimationFrame(tick);
+      };
       tick();
-    } catch(e) {}
-  };
-  const stopVol = () => { cancelAnimationFrame(animFrameRef.current); streamRef.current?.getTracks().forEach(t=>t.stop()); try{audioCtxRef.current?.close();}catch{}; setVolumeLevel(0); };
+    } catch(e) { console.warn("Mic error:", e); }
+  }, [submitSpeech]);
 
-  const startRecording = async () => {
-    if (loading || speaking || holdingRef.current) return;
-    stopSpeaking(); setSpeaking(false); stopMouthAnim();
-    holdingRef.current = true; setRecording(true); setLiveText(""); liveTextRef.current = "";
-    await startVol();
+  const stopVolAnalyser = useCallback(() => {
+    cancelAnimationFrame(animFrameRef.current);
+    clearTimeout(vadTimerRef.current);
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    try { audioCtxRef.current?.close(); } catch {}
+    setVolumeLevel(0);
+  }, []);
+
+  // ── Start listening ──
+  const startListening = useCallback(async () => {
+    if (loading) return;
+    // If Sarah is speaking, interrupt her
+    if (speaking) { stopSpeaking(); setSpeaking(false); stopMouthAnim(); }
+
+    isRecordingRef.current = true;
+    setRecording(true); setVadState("listening");
+    setLiveText(""); liveTextRef.current = "";
+    speechStartRef.current = null;
+
+    await startVolAnalyser();
+
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert("请用 Safari，才能使用语音识别"); holdingRef.current=false; setRecording(false); return; }
-    const r = new SR(); r.lang="en-US"; r.continuous=true; r.interimResults=true;
+    if (!SR) { alert("请用 Safari 或 Chrome，才能使用语音识别"); isRecordingRef.current=false; setRecording(false); return; }
+    const r = new SR();
+    r.lang = "en-US"; r.continuous = true; r.interimResults = true;
     recognitionRef.current = r;
-    r.onresult = (e) => { let int="",fin=""; for(let i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal)fin+=e.results[i][0].transcript;else int+=e.results[i][0].transcript;} const t=fin||int; setLiveText(t); liveTextRef.current=t; };
-    r.onerror = ()=>{};
+    r.onresult = (e) => {
+      let interim = "", final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      const t = final || interim;
+      setLiveText(t); liveTextRef.current = t;
+    };
+    r.onend = () => {
+      // Auto-restart if still recording (browser sometimes stops recognition)
+      if (isRecordingRef.current) {
+        try { r.start(); } catch {}
+      }
+    };
+    r.onerror = () => {};
     try { r.start(); } catch {}
-  };
+  }, [loading, speaking, stopSpeaking, startVolAnalyser]);
 
-  const stopRecording = async () => {
-    if (!holdingRef.current) return;
-    holdingRef.current = false; setRecording(false); stopVol();
+  // ── Stop listening ──
+  const stopListening = useCallback(() => {
+    isRecordingRef.current = false;
+    setRecording(false); setVadState("idle");
+    clearTimeout(vadTimerRef.current);
+    speechStartRef.current = null;
     try { recognitionRef.current?.stop(); } catch {}
-    const final = liveTextRef.current.trim(); setLiveText(""); liveTextRef.current = "";
-    if (!final) return;
-    setMessages(prev => [...prev, { role:"user", message:final }]);
-    setLoading(true);
+    stopVolAnalyser();
+    setLiveText(""); liveTextRef.current = "";
+  }, [stopVolAnalyser]);
+
+  // ── Button tap: toggle or interrupt ──
+  const handleMicTap = useCallback(() => {
+    if (loading) return;
+    if (recording) {
+      // Manual stop — send whatever we have
+      const final = liveTextRef.current.trim();
+      stopListening();
+      if (final) {
+        setMessages(prev => [...prev, { role:"user", message:final }]);
+        setLoading(true);
+        const key = localStorage.getItem("sarahApiKey") || "";
+        const fc = JSON.parse(localStorage.getItem("sarahCards")||"[]");
+        const rl = JSON.parse(localStorage.getItem("sarahReview")||"[]");
+        const sp = profileRef.current;
+        const note = `[exchanges=${sp.exchanges+1}, learned:${fc.map(f=>f.word).join(",")||"none"}, review:${rl.map(r=>r.word).join(",")||"none"}]`;
+        const newHist = [...convHistRef.current, { role:"user", content:final }];
+        callSarah(newHist, note, key)
+          .then(text => { processResponse(text, newHist, sp); })
+          .catch(() => setMessages(prev => [...prev, { role:"sarah", message:"Sorry, try again! 😅" }]))
+          .finally(() => setLoading(false));
+      }
+    } else {
+      startListening();
+    }
+  }, [loading, recording, stopListening, startListening, callSarah, processResponse]);
+
+  const startChat = async (topic) => {
+    setCurrentTopic(topic); setMessages([]); setConversationHistory([]); convHistRef.current = [];
+    setQuizActive(null); quizActiveRef.current = null;
+    setScreen("chat"); setLoading(true); stopSpeaking(); stopListening();
     const fc = JSON.parse(localStorage.getItem("sarahCards")||"[]");
     const rl = JSON.parse(localStorage.getItem("sarahReview")||"[]");
     const sp = JSON.parse(localStorage.getItem("sarahProfile")||'{"level":"beginner","exchanges":0}');
-    const note = `[exchanges=${sp.exchanges+1}, learned:${fc.map(f=>f.word).join(",")||"none"}, review:${rl.map(r=>r.word).join(",")||"none"}]`;
-    const newHist = [...conversationHistory, { role:"user", content:final }];
+    profileRef.current = sp;
+    const init = `Start a spoken conversation about "${topic.title}" (${topic.hint}). Level: ${sp.level}, exchanges: ${sp.exchanges}. Learned: ${fc.map(f=>f.word).join(", ")||"none"}. Review: ${rl.map(r=>r.word).join(", ")||"none"}. Keep it short and natural for speaking.`;
+    const history = [{ role:"user", content:init }];
     try {
-      const text = await callSarah(newHist, note, apiKey);
-      processResponse(text, newHist, quizActive, sp);
-    } catch(e) {
-      setMessages(prev => [...prev, { role:"sarah", message:"Sorry, connection issue! Try again, eh? 😅" }]);
+      const text = await callSarah(history, "", apiKey);
+      processResponse(text, history, sp);
+    } catch {
+      const fb = { role:"sarah", message:"Hey! I'm Sarah, ready to chat eh? 🍁", emotion:"happy" };
+      setMessages([fb]); setSpeaking(true); startMouthAnim();
+      speak(fb.message, () => { setSpeaking(false); stopMouthAnim(); });
     }
     setLoading(false);
   };
 
-  const handleStart = e => { e.preventDefault(); startRecording(); };
-  const handleEnd = e => { e.preventDefault(); stopRecording(); };
-
   const displayCards = filterMode === "review" ? flashcards.filter(f=>f.needsReview) : flashcards;
   const todayTopic = TOPICS[new Date().getDay() % TOPICS.length];
+  const emotionFilter = { neutral:"none", happy:"brightness(1.05) saturate(1.1)", excited:"brightness(1.1) saturate(1.2)", encouraging:"brightness(1.08)", thinking:"brightness(0.95) saturate(0.9)" };
 
-  const emotionFilter = {
-    neutral: "none",
-    happy: "brightness(1.05) saturate(1.1)",
-    excited: "brightness(1.1) saturate(1.2)",
-    encouraging: "brightness(1.08)",
-    thinking: "brightness(0.95) saturate(0.9)"
-  };
+  // Mic button label
+  const micLabel = loading ? "Thinking..." : recording ? (vadState==="sending" ? "Sending..." : "● Tap to send") : speaking ? "Tap to interrupt" : "Tap to speak";
+  const micEmoji = loading ? "⏳" : recording ? "🎙️" : speaking ? "✋" : "🎤";
+  const micBg    = recording
+    ? "radial-gradient(circle at 40% 35%,#ff6b6b,#c8102e)"
+    : speaking
+    ? "linear-gradient(145deg,#2a4a8e,#1a3060)"
+    : loading
+    ? "rgba(200,16,46,0.25)"
+    : "linear-gradient(145deg,#e8182e,#a00020)";
 
-  // ── API KEY SCREEN ──
+  // ── API KEY ──
   if (!apiKey) return (
     <div style={{minHeight:"100dvh",background:"linear-gradient(160deg,#0a0e1a,#0d1f3c)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"32px 24px",fontFamily:"Georgia,serif",color:"#e8e0d0"}}>
       <div style={{width:"90px",height:"90px",borderRadius:"50%",overflow:"hidden",marginBottom:"16px",border:"3px solid #c8102e",boxShadow:"0 0 30px rgba(200,16,46,0.4)"}}>
@@ -323,26 +412,13 @@ export default function App() {
       <div style={{fontSize:"26px",fontWeight:"700",marginBottom:"4px"}}>Sarah</div>
       <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"32px",letterSpacing:"2px",textTransform:"uppercase"}}>Canadian Voice Tutor · Toronto</div>
       <div style={{width:"100%",maxWidth:"360px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"24px",padding:"28px"}}>
-
-        {/* Anthropic Key */}
         <div style={{fontSize:"14px",fontWeight:"600",marginBottom:"6px"}}>🔑 Anthropic API Key</div>
-        <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"10px",lineHeight:"1.6"}}>前往 <strong style={{color:"#4ECDC4"}}>console.anthropic.com</strong> 获取</div>
-        <input type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} placeholder="sk-ant-api03-..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"20px",boxSizing:"border-box"}}/>
-
-        {/* Google TTS Key */}
-        <div style={{fontSize:"14px",fontWeight:"600",marginBottom:"6px"}}>🎙️ Google TTS Key <span style={{fontSize:"11px",color:"#5a6a7a",fontWeight:"400"}}>(可选，真人语音)</span></div>
-        <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"6px",lineHeight:"1.6"}}>
-          前往 <strong style={{color:"#4ECDC4"}}>console.cloud.google.com</strong> → Text-to-Speech API → 创建 Key
+        <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"8px",lineHeight:"1.6"}}>前往 <strong style={{color:"#4ECDC4"}}>console.anthropic.com</strong> 获取，只存本地。</div>
+        <div style={{fontSize:"11px",color:"#5a8a5a",background:"rgba(78,205,196,0.08)",border:"1px solid rgba(78,205,196,0.2)",borderRadius:"8px",padding:"7px 10px",marginBottom:"14px",lineHeight:"1.6"}}>
+          ✅ 同一个 Key 驱动对话 + Claude 真人语音
         </div>
-        <div style={{fontSize:"11px",color:"#5a8a5a",background:"rgba(78,205,196,0.08)",border:"1px solid rgba(78,205,196,0.2)",borderRadius:"8px",padding:"7px 10px",marginBottom:"10px",lineHeight:"1.6"}}>
-          ✅ 每月免费 100万字符 · 加拿大真人女声
-        </div>
-        <input type="password" value={googleKeyInput} onChange={e=>setGoogleKeyInput(e.target.value)} placeholder="AIza..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"18px",boxSizing:"border-box"}}/>
-
-        <button onClick={saveKey} style={{width:"100%",background:"linear-gradient(135deg,#c8102e,#ff4757)",border:"none",borderRadius:"12px",padding:"14px",color:"white",fontSize:"16px",fontWeight:"600",cursor:"pointer"}}>
-          {googleKeyInput ? "开始练习 (真人语音) 🎤" : "开始练习 🎤"}
-        </button>
-        {!googleKeyInput && <div style={{textAlign:"center",fontSize:"11px",color:"#4a5a6a",marginTop:"10px"}}>没有 Google Key？也可以先用浏览器语音</div>}
+        <input type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveKey()} placeholder="sk-ant-api03-..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"14px",boxSizing:"border-box"}}/>
+        <button onClick={saveKey} style={{width:"100%",background:"linear-gradient(135deg,#c8102e,#ff4757)",border:"none",borderRadius:"12px",padding:"14px",color:"white",fontSize:"16px",fontWeight:"600",cursor:"pointer"}}>开始练习 🎤</button>
       </div>
     </div>
   );
@@ -357,9 +433,7 @@ export default function App() {
           </div>
           <div>
             <div style={{fontSize:"18px",fontWeight:"700"}}>Sarah</div>
-            <div style={{fontSize:"10px",color:googleKey?"#4ECDC4":"#7a8a9a",letterSpacing:"1.5px",textTransform:"uppercase"}}>
-              {googleKey ? "真人语音 · Toronto 🎤" : "Voice Tutor · Toronto 🎤"}
-            </div>
+            <div style={{fontSize:"10px",color:"#4ECDC4",letterSpacing:"1.5px",textTransform:"uppercase"}}>Claude Voice · Toronto 🎤</div>
           </div>
         </div>
         <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
@@ -394,28 +468,28 @@ export default function App() {
     </div>
   );
 
-  // ── VOICE CHAT ──
+  // ── CHAT ──
   if (screen === "chat") return (
     <div style={{height:"100dvh",display:"flex",flexDirection:"column",background:"#080c18",fontFamily:"Georgia,serif",color:"#e8e0d0",userSelect:"none"}}>
+      {/* Header */}
       <div style={{background:"rgba(255,255,255,0.03)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"11px 15px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
-        <button onClick={()=>{stopSpeaking();stopMouthAnim();setScreen("home");}} style={{background:"none",border:"none",color:"#7a8a9a",cursor:"pointer",fontSize:"20px",padding:"4px 8px 4px 0",WebkitTapHighlightColor:"transparent"}}>←</button>
+        <button onClick={()=>{stopSpeaking();stopListening();stopMouthAnim();setScreen("home");}} style={{background:"none",border:"none",color:"#7a8a9a",cursor:"pointer",fontSize:"20px",padding:"4px 8px 4px 0",WebkitTapHighlightColor:"transparent"}}>←</button>
         <div style={{position:"relative",flexShrink:0}}>
-          <div style={{width:"44px",height:"44px",borderRadius:"50%",overflow:"hidden",border:`2px solid ${speaking?"#ff4757":"rgba(200,16,46,0.5)"}`,boxShadow:speaking?"0 0 0 4px rgba(200,16,46,0.2), 0 0 0 8px rgba(200,16,46,0.08)":"none",transition:"all 0.3s"}}>
+          <div style={{width:"44px",height:"44px",borderRadius:"50%",overflow:"hidden",border:`2px solid ${speaking?"#ff4757":recording?"#ff6b6b":"rgba(200,16,46,0.5)"}`,boxShadow:speaking||recording?"0 0 0 4px rgba(200,16,46,0.2)":"none",transition:"all 0.3s"}}>
             <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion],transition:"filter 0.5s"}} alt="Sarah"/>
           </div>
-          {speaking && (
-            <div style={{position:"absolute",bottom:"4px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"16px":"12px",height:mouthOpen?"8px":"3px",background:"rgba(180,80,80,0.85)",borderRadius:"0 0 8px 8px",transition:"all 0.18s",border:"1px solid rgba(255,255,255,0.3)"}}/>
-          )}
+          {speaking && <div style={{position:"absolute",bottom:"4px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"16px":"12px",height:mouthOpen?"8px":"3px",background:"rgba(180,80,80,0.85)",borderRadius:"0 0 8px 8px",transition:"all 0.18s",border:"1px solid rgba(255,255,255,0.3)"}}/>}
         </div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:"15px",fontWeight:"700"}}>Sarah</div>
-          <div style={{fontSize:"11px",color:speaking?"#ff4757":loading?"#FFE66D":recording?"#ff4757":"#4ECDC4",transition:"color 0.3s"}}>
-            {recording?"🔴 Listening...":speaking?"🔊 Speaking...":loading?"⏳ Thinking...":`● ${currentTopic?.title}`}
+          <div style={{fontSize:"11px",color:speaking?"#ff4757":loading?"#FFE66D":recording?"#ff6b6b":"#4ECDC4",transition:"color 0.3s"}}>
+            {recording?"🎙️ Listening — pause to send":speaking?"🔊 Speaking — tap to interrupt":loading?"⏳ Thinking...":`● ${currentTopic?.title}`}
           </div>
         </div>
         <button onClick={()=>setScreen("flashcards")} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"14px",padding:"5px 11px",color:"#e8e0d0",cursor:"pointer",fontSize:"12px",flexShrink:0,WebkitTapHighlightColor:"transparent"}}>📇 {flashcards.length}</button>
       </div>
 
+      {/* Messages */}
       <div style={{flex:1,overflowY:"auto",padding:"14px 13px 8px",display:"flex",flexDirection:"column",gap:"12px"}}>
         {messages.map((msg,i)=>(
           <div key={i}>
@@ -431,7 +505,7 @@ export default function App() {
                   </div>
                   {msg.teachingNote&&<div style={{marginTop:"5px",padding:"6px 10px",background:"rgba(255,230,109,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"12px",color:"#c8b87a"}}>💡 {msg.teachingNote}</div>}
                   {msg.newWords?.length>0&&<div style={{marginTop:"6px",display:"flex",flexWrap:"wrap",gap:"5px"}}>{msg.newWords.map((w,j)=><div key={j} style={{background:`${typeColor[w.type]||"#4ECDC4"}18`,border:`1px solid ${typeColor[w.type]||"#4ECDC4"}50`,borderRadius:"14px",padding:"3px 10px",fontSize:"11px",color:typeColor[w.type]||"#4ECDC4"}}>✨ <strong>{w.word}</strong> — {w.definition}</div>)}</div>}
-                  {msg.quizResult&&<div style={{marginTop:"5px",padding:"6px 10px",background:msg.quizResult==="correct"?"rgba(168,230,207,0.1)":"rgba(255,107,107,0.1)",border:`1px solid ${msg.quizResult==="correct"?"rgba(168,230,207,0.3)":"rgba(255,107,107,0.3)"}`,borderRadius:"8px",fontSize:"11px",color:msg.quizResult==="correct"?"#A8E6CF":"#FF6B6B"}}>{msg.quizResult==="correct"?"✅ Great! Off review list.":msg.needsReview?"📌 Added to review!":"💪 Keep it up!"}</div>}
+                  {msg.quizResult&&<div style={{marginTop:"5px",padding:"6px 10px",background:msg.quizResult==="correct"?"rgba(168,230,207,0.1)":"rgba(255,107,107,0.1)",border:`1px solid ${msg.quizResult==="correct"?"rgba(168,230,207,0.3)":"rgba(255,107,107,0.3)"}`,borderRadius:"8px",fontSize:"11px",color:msg.quizResult==="correct"?"#A8E6CF":"#FF6B6B"}}>{msg.quizResult==="correct"?"✅ Great!":msg.needsReview?"📌 Added to review!":"💪 Keep it up!"}</div>}
                 </div>
               </div>
             ):(
@@ -441,28 +515,61 @@ export default function App() {
             )}
           </div>
         ))}
-        {(recording||liveText)&&<div style={{display:"flex",justifyContent:"flex-end"}}><div style={{background:"rgba(26,58,110,0.6)",borderRadius:"16px 4px 16px 16px",padding:"10px 14px",fontSize:"15px",lineHeight:"1.65",maxWidth:"78%",border:"1px dashed rgba(78,140,205,0.5)",color:liveText?"#e8e0d0":"#5a7aaa",fontStyle:liveText?"normal":"italic"}}>{liveText||"Listening..."}<span style={{display:"inline-block",width:"6px",height:"6px",background:"#ff4757",borderRadius:"50%",marginLeft:"6px",verticalAlign:"middle",animation:"blink 0.8s infinite"}}/></div></div>}
+        {/* Live transcript bubble */}
+        {recording && <div style={{display:"flex",justifyContent:"flex-end"}}>
+          <div style={{background:"rgba(26,58,110,0.6)",borderRadius:"16px 4px 16px 16px",padding:"10px 14px",fontSize:"15px",lineHeight:"1.65",maxWidth:"78%",border:"1px dashed rgba(78,140,205,0.5)",color:liveText?"#e8e0d0":"#5a7aaa",fontStyle:liveText?"normal":"italic"}}>
+            {liveText||"Listening..."}
+            <span style={{display:"inline-block",width:"6px",height:"6px",background:"#ff4757",borderRadius:"50%",marginLeft:"6px",verticalAlign:"middle",animation:"blink 0.8s infinite"}}/>
+          </div>
+        </div>}
         {loading&&!recording&&<div style={{display:"flex",gap:"8px"}}><div style={{width:"30px",height:"30px",borderRadius:"50%",overflow:"hidden",flexShrink:0,border:"1.5px solid rgba(200,16,46,0.4)"}}><img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top"}} alt="S"/></div><div style={{background:"rgba(255,255,255,0.06)",borderRadius:"4px 16px 16px 16px",padding:"12px 16px",border:"1px solid rgba(255,255,255,0.08)"}}><div style={{display:"flex",gap:"5px"}}>{[0,1,2].map(i=><div key={i} style={{width:"7px",height:"7px",borderRadius:"50%",background:"#c8102e",animation:`bounce 1s ease-in-out ${i*0.2}s infinite`}}/>)}</div></div></div>}
         <div ref={messagesEndRef}/>
       </div>
 
-      <div style={{flexShrink:0,paddingTop:"14px",paddingBottom:"max(24px, env(safe-area-inset-bottom))",paddingLeft:"20px",paddingRight:"20px",display:"flex",flexDirection:"column",alignItems:"center",gap:"12px",background:"rgba(0,0,0,0.4)",borderTop:"1px solid rgba(255,255,255,0.06)"}}>
-        {speaking&&(
-          <div style={{position:"relative",width:"80px",height:"80px",borderRadius:"50%",overflow:"hidden",border:"3px solid #ff4757",boxShadow:"0 0 0 6px rgba(200,16,46,0.2), 0 0 0 12px rgba(200,16,46,0.08)"}}>
-            <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion]}} alt="Sarah"/>
-            <div style={{position:"absolute",bottom:"10px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"22px":"14px",height:mouthOpen?"10px":"4px",background:"rgba(160,60,60,0.9)",borderRadius:"0 0 11px 11px",transition:"all 0.18s",border:"1px solid rgba(255,200,200,0.4)"}}/>
-          </div>
-        )}
+      {/* Controls */}
+      <div style={{flexShrink:0,paddingTop:"14px",paddingBottom:"max(24px, env(safe-area-inset-bottom))",paddingLeft:"20px",paddingRight:"20px",display:"flex",flexDirection:"column",alignItems:"center",gap:"10px",background:"rgba(0,0,0,0.4)",borderTop:"1px solid rgba(255,255,255,0.06)"}}>
+        {/* Sarah speaking: large avatar */}
+        {speaking && <div style={{position:"relative",width:"72px",height:"72px",borderRadius:"50%",overflow:"hidden",border:"3px solid #ff4757",boxShadow:"0 0 0 6px rgba(200,16,46,0.2)"}}>
+          <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion]}} alt="Sarah"/>
+          <div style={{position:"absolute",bottom:"9px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"20px":"13px",height:mouthOpen?"9px":"3px",background:"rgba(160,60,60,0.9)",borderRadius:"0 0 10px 10px",transition:"all 0.18s"}}/>
+        </div>}
+
         {quizActive&&!recording&&!loading&&!speaking&&<div style={{padding:"5px 14px",background:"rgba(78,205,196,0.1)",border:"1px solid rgba(78,205,196,0.25)",borderRadius:"18px",fontSize:"12px",color:"#4ECDC4"}}>🎯 Say <strong>"{quizActive}"</strong></div>}
-        <div style={{height:"28px",display:"flex",alignItems:"center",gap:"3px",opacity:recording?1:0,transition:"opacity 0.2s"}}>
-          {Array.from({length:18}).map((_,i)=>{const c=Math.abs(i-8.5)/8.5;const h=recording?Math.max(3,(1-c*0.4)*volumeLevel*28+Math.random()*4+3):3;return<div key={i} style={{width:"3px",borderRadius:"2px",background:`hsl(${350+volumeLevel*20},80%,60%)`,height:`${h}px`,transition:"height 0.07s"}}/>;} )}
+
+        {/* Volume wave */}
+        <div style={{height:"24px",display:"flex",alignItems:"center",gap:"3px",opacity:recording?1:0,transition:"opacity 0.3s"}}>
+          {Array.from({length:18}).map((_,i)=>{
+            const c=Math.abs(i-8.5)/8.5;
+            const h=recording?Math.max(3,(1-c*0.4)*volumeLevel*26+Math.random()*3+2):3;
+            return <div key={i} style={{width:"3px",borderRadius:"2px",background:vadState==="sending"?"#4ECDC4":`hsl(${350+volumeLevel*20},80%,60%)`,height:`${h}px`,transition:"height 0.07s"}}/>;
+          })}
         </div>
-        <div onTouchStart={handleStart} onTouchEnd={handleEnd} onTouchCancel={handleEnd} onMouseDown={handleStart} onMouseUp={handleEnd} onMouseLeave={handleEnd}
-          style={{width:"84px",height:"84px",borderRadius:"50%",background:recording?"radial-gradient(circle at 40% 35%,#ff6b6b,#c8102e)":speaking||loading?"rgba(200,16,46,0.25)":"linear-gradient(145deg,#e8182e,#a00020)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"36px",cursor:speaking||loading?"not-allowed":"pointer",boxShadow:recording?`0 0 0 ${6+volumeLevel*16}px rgba(200,16,46,0.25),0 0 0 ${12+volumeLevel*28}px rgba(200,16,46,0.1),0 8px 28px rgba(200,16,46,0.6)`:speaking?"0 0 0 6px rgba(200,16,46,0.2),0 8px 20px rgba(200,16,46,0.3)":"0 6px 26px rgba(200,16,46,0.5),inset 0 1px 0 rgba(255,255,255,0.2)",transition:"box-shadow 0.1s,background 0.2s,transform 0.1s",transform:recording?"scale(1.06)":"scale(1)",WebkitTapHighlightColor:"transparent",touchAction:"none"}}>
-          {recording?"🎙️":speaking?"🔊":loading?"⏳":"🎤"}
+
+        {/* Big mic button — tap to toggle */}
+        <div
+          onClick={handleMicTap}
+          style={{
+            width:"84px", height:"84px", borderRadius:"50%",
+            background: micBg,
+            display:"flex", alignItems:"center", justifyContent:"center",
+            fontSize:"36px",
+            cursor: loading ? "not-allowed" : "pointer",
+            boxShadow: recording
+              ? `0 0 0 ${6+volumeLevel*14}px rgba(200,16,46,0.2),0 0 0 ${12+volumeLevel*24}px rgba(200,16,46,0.08),0 8px 28px rgba(200,16,46,0.5)`
+              : speaking
+              ? "0 0 0 6px rgba(30,60,140,0.3),0 8px 20px rgba(30,60,140,0.4)"
+              : "0 6px 26px rgba(200,16,46,0.5),inset 0 1px 0 rgba(255,255,255,0.2)",
+            transition:"box-shadow 0.1s,background 0.2s,transform 0.1s",
+            transform: recording ? "scale(1.04)" : "scale(1)",
+            WebkitTapHighlightColor:"transparent",
+            touchAction:"manipulation"
+          }}
+        >
+          {micEmoji}
         </div>
-        <div style={{fontSize:"11px",color:recording?"#ff6b6b":"#4a5a6a",letterSpacing:"1px",textTransform:"uppercase",fontFamily:"monospace",transition:"color 0.3s"}}>
-          {recording?"● RELEASE TO SEND":speaking?"Sarah is speaking":loading?"Thinking...":"HOLD TO SPEAK"}
+
+        <div style={{fontSize:"11px",color:recording?"#ff6b6b":speaking?"#7a9aff":"#4a5a6a",letterSpacing:"1px",textTransform:"uppercase",fontFamily:"monospace",transition:"color 0.3s"}}>
+          {micLabel}
         </div>
       </div>
       <style>{`@keyframes bounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}@keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}`}</style>

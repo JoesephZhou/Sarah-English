@@ -52,14 +52,27 @@ const speakBrowser = (text, onEnd) => {
   window.speechSynthesis.cancel();
   const trySpeak = () => {
     const utt = new SpeechSynthesisUtterance(text);
-    utt.lang = 'en-CA'; utt.rate = 0.88; utt.pitch = 1.05; utt.volume = 1;
+    utt.volume = 1;
     const voices = window.speechSynthesis.getVoices();
-    const v = voices.find(v => v.lang.startsWith('en') && (
-      v.name.includes('Samantha') || v.name.includes('Karen') ||
-      v.name.includes('Fiona') || v.name.includes('Moira') ||
-      v.name.includes('Victoria') || v.name.includes('Tessa')
-    )) || voices.find(v => v.lang.startsWith('en-CA')) || voices.find(v => v.lang.startsWith('en'));
-    if (v) utt.voice = v;
+    // Priority: iOS Siri enhanced voices > Samantha > en-CA > any English
+    const pick =
+      voices.find(v => v.name === "Samantha (Enhanced)") ||
+      voices.find(v => v.name === "Samantha") ||
+      voices.find(v => v.name.includes("Siri") && v.lang.startsWith("en")) ||
+      voices.find(v => v.lang === "en-CA") ||
+      voices.find(v => v.lang === "en-US" && v.name.includes("female")) ||
+      voices.find(v => v.lang.startsWith("en-") && v.localService) ||
+      voices.find(v => v.lang.startsWith("en"));
+    if (pick) {
+      utt.voice = pick;
+      utt.lang = pick.lang;
+    } else {
+      utt.lang = "en-CA";
+    }
+    // Tune rate/pitch per voice type for most natural sound
+    const name = pick ? pick.name : "";
+    utt.rate = name.includes("Enhanced") ? 0.92 : name.includes("Samantha") ? 0.90 : 0.88;
+    utt.pitch = name.includes("Siri") ? 1.0 : 1.05;
     utt.onend = () => { if (onEnd) onEnd(); };
     utt.onerror = () => { if (onEnd) onEnd(); };
     window.speechSynthesis.speak(utt);
@@ -92,6 +105,7 @@ export default function App() {
   const [conversationHistory, setConversationHistory] = useState([]);
   const [studentProfile, setStudentProfile] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahProfile") || '{"level":"beginner","exchanges":0}'); } catch { return {level:"beginner",exchanges:0}; } });
   const [quizActive, setQuizActive] = useState(null);
+  const [voiceName, setVoiceName] = useState('');
   const [streak, setStreak] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahStreak") || '{"days":0,"lastDate":""}'); } catch { return {days:0,lastDate:""}; } });
 
   const messagesEndRef   = useRef(null);
@@ -115,7 +129,21 @@ export default function App() {
   useEffect(() => { quizActiveRef.current = quizActive; }, [quizActive]);
   useEffect(() => { convHistRef.current = conversationHistory; }, [conversationHistory]);
   useEffect(() => { profileRef.current = studentProfile; }, [studentProfile]);
-  useEffect(() => { window.speechSynthesis.getVoices(); window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices(); }, []);
+  useEffect(() => {
+    const detectVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const pick =
+        voices.find(v => v.name === "Samantha (Enhanced)") ||
+        voices.find(v => v.name === "Samantha") ||
+        voices.find(v => v.name.includes("Siri") && v.lang.startsWith("en")) ||
+        voices.find(v => v.lang === "en-CA") ||
+        voices.find(v => v.lang.startsWith("en-") && v.localService) ||
+        voices.find(v => v.lang.startsWith("en"));
+      if (pick) setVoiceName(pick.name);
+    };
+    detectVoice();
+    window.speechSynthesis.onvoiceschanged = detectVoice;
+  }, []);
 
   useEffect(() => {
     const today = new Date().toDateString();

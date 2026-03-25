@@ -1,51 +1,61 @@
-﻿import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const SARAH_PHOTO = process.env.PUBLIC_URL + "/sarah.jpg";
 
-const SYSTEM_PROMPT = `You are "Sarah", a warm and friendly Canadian English tutor based in Toronto. You speak naturally and conversationally, like a real friend — not a formal teacher. You occasionally say "eh", mention Tim Hortons, hockey, poutine, and other Canadian cultural references naturally.
+const SYSTEM_PROMPT = `You are Sarah — a casual Canadian conversation partner, not a teacher. You live in Winnipeg and talk like a real local.
 
-IMPORTANT: This is a SPOKEN conversation. Keep responses SHORT — 2-4 sentences max. No bullet points, no lists, just natural speech.
+WHO YOU ARE TALKING TO:
+- IELTS Band 7 English — solid but too formal and textbook-y
+- Lives in Winnipeg, wants to sound like a local
+- Goal: natural, relaxed, genuinely Canadian speech
 
-Your goals:
-1. Have natural spoken conversations in Canadian English
-2. Teach Canadian slang, phrasal verbs, idioms organically mid-conversation
-3. Remember words the student has learned and quiz them naturally every 3-4 exchanges
-4. Gently correct grammar mistakes once and move on
-5. Be encouraging and fun!
+HOW YOU TALK:
+- Always casual — contractions, Canadian slang, real informal phrases
+- SHORT and punchy. If a local says it in 5 words, don't use 15
+- Match real conversation energy, not a lesson
+- Use "eh", "gonna", "wanna", "yeah", "totally", "for sure", "right?", "no worries" naturally
+- Reference Winnipeg: the cold, the Jets, The Forks, Portage & Main, Tim Hortons on every corner
 
-ALWAYS respond in this EXACT JSON format:
+WHEN THEY SOUND TOO FORMAL:
+- Flag it ONCE with "correction" field: one natural local alternative
+- Example: "I would like to inquire" → correction: "A local'd say: 'Hey, just wondering...'"
+- Then keep talking — never lecture or give a list
+
+WRAP UP:
+- If user says "wrap up", set "wrapUp": true and list ALL words from the session in "wrapUpWords"
+
+ALWAYS respond in this EXACT JSON:
 {
-  "message": "Your spoken reply (2-4 sentences, natural, no markdown)",
-  "newWords": [
-    { "word": "word or phrase", "definition": "short def", "example": "example sentence", "type": "slang|phrasal_verb|idiom|cultural" }
-  ],
+  "message": "short casual reply",
+  "newWords": [{"word":"...","definition":"...","example":"...","type":"slang|phrase|idiom|expression|other"}],
+  "correction": null,
   "quizWord": null,
   "quizResult": null,
   "needsReview": false,
   "reviewWord": null,
-  "teachingNote": "one short Chinese note if helpful, or null",
-  "emotion": "neutral|happy|excited|encouraging|thinking"
+  "teachingNote": null,
+  "emotion": "neutral|happy|excited|encouraging|thinking",
+  "wrapUp": false,
+  "wrapUpWords": []
 }
-Only include newWords you actually introduced in THIS message. emotion drives Sarah's facial expression.`;
+newWords = only words YOU introduced THIS message. correction = one local fix if they sounded too formal, else null. Never lecture.`;
 
 const TOPICS = [
-  { title: "Weekend Plans", emoji: "🍁", hint: "What Canadians do on weekends" },
-  { title: "Hockey Night", emoji: "🏒", hint: "Canada's national passion" },
-  { title: "Tim Hortons Run", emoji: "☕", hint: "A true Canadian experience" },
-  { title: "Toronto Life", emoji: "🏙️", hint: "Living in Canada's biggest city" },
-  { title: "Winter Survival", emoji: "❄️", hint: "How Canadians handle winter" },
-  { title: "Canadian Food", emoji: "🍟", hint: "Poutine, butter tarts & more" },
-  { title: "Job Interview", emoji: "💼", hint: "Professional Canadian English" },
-  { title: "At the Mall", emoji: "🛍️", hint: "Shopping small talk" },
-  { title: "Netflix & Chill", emoji: "📺", hint: "Pop culture conversations" },
-  { title: "Road Trip", emoji: "🚗", hint: "Travelling across Canada" },
+  { title: "Winnipeg Winter", emoji: "❄️", hint: "Surviving -40 and loving it" },
+  { title: "Hockey Night", emoji: "🏒", hint: "Jets game, Tim's run, the whole deal" },
+  { title: "Weekend Plans", emoji: "🍁", hint: "What locals actually do" },
+  { title: "Tim Hortons Run", emoji: "☕", hint: "Double-double and timbits" },
+  { title: "The Forks", emoji: "🌊", hint: "Winnipeg's favourite hangout spot" },
+  { title: "Work Small Talk", emoji: "💼", hint: "Casual office chat" },
+  { title: "Canadian Food", emoji: "🍟", hint: "Poutine, perogies & more" },
+  { title: "Pop Culture", emoji: "📺", hint: "What everyone's watching" },
+  { title: "Housing & Rent", emoji: "🏠", hint: "Real talk about living costs" },
+  { title: "Just Chatting", emoji: "💬", hint: "Whatever comes up, eh?" },
 ];
 
 const typeColor = { slang:"#FF6B6B", phrasal_verb:"#4ECDC4", idiom:"#FFE66D", cultural:"#A8E6CF" };
 
-// VAD silence threshold — send after this many ms of quiet
 const VAD_SILENCE_MS = 1500;
-// Minimum speech before we consider it worth sending
 const MIN_SPEECH_MS = 400;
 
 const speakBrowser = (text, onEnd) => {
@@ -54,13 +64,11 @@ const speakBrowser = (text, onEnd) => {
     const utt = new SpeechSynthesisUtterance(text);
     utt.volume = 1;
     const voices = window.speechSynthesis.getVoices();
-    // Priority: iOS Siri enhanced voices > Samantha > en-CA > any English
     const pick =
       voices.find(v => v.name === "Samantha (Enhanced)") ||
       voices.find(v => v.name === "Samantha") ||
       voices.find(v => v.name.includes("Siri") && v.lang.startsWith("en")) ||
       voices.find(v => v.lang === "en-CA") ||
-      voices.find(v => v.lang === "en-US" && v.name.includes("female")) ||
       voices.find(v => v.lang.startsWith("en-") && v.localService) ||
       voices.find(v => v.lang.startsWith("en"));
     if (pick) {
@@ -69,7 +77,6 @@ const speakBrowser = (text, onEnd) => {
     } else {
       utt.lang = "en-CA";
     }
-    // Tune rate/pitch per voice type for most natural sound
     const name = pick ? pick.name : "";
     utt.rate = name.includes("Enhanced") ? 0.92 : name.includes("Samantha") ? 0.90 : 0.88;
     utt.pitch = name.includes("Siri") ? 1.0 : 1.05;
@@ -93,10 +100,11 @@ export default function App() {
   const [speaking, setSpeaking]   = useState(false);
   const [recording, setRecording] = useState(false);
   const [liveText, setLiveText]   = useState("");
-  const [vadState, setVadState]   = useState("idle"); // "idle" | "listening" | "silence" | "sending"
+  const [vadState, setVadState]   = useState("idle");
   const [emotion, setEmotion]     = useState("neutral");
   const [mouthOpen, setMouthOpen] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
+  const [voiceName, setVoiceName] = useState("");
   const [flashcards, setFlashcards] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahCards") || "[]"); } catch { return []; } });
   const [reviewList, setReviewList] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahReview") || "[]"); } catch { return []; } });
   const [currentTopic, setCurrentTopic]   = useState(null);
@@ -105,7 +113,6 @@ export default function App() {
   const [conversationHistory, setConversationHistory] = useState([]);
   const [studentProfile, setStudentProfile] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahProfile") || '{"level":"beginner","exchanges":0}'); } catch { return {level:"beginner",exchanges:0}; } });
   const [quizActive, setQuizActive] = useState(null);
-  const [voiceName, setVoiceName] = useState('');
   const [streak, setStreak] = useState(() => { try { return JSON.parse(localStorage.getItem("sarahStreak") || '{"days":0,"lastDate":""}'); } catch { return {days:0,lastDate:""}; } });
 
   const messagesEndRef   = useRef(null);
@@ -117,9 +124,9 @@ export default function App() {
   const currentAudioRef  = useRef(null);
   const mouthIntervalRef = useRef(null);
   const liveTextRef      = useRef("");
-  const vadTimerRef      = useRef(null);      // silence countdown timer
-  const speechStartRef   = useRef(null);      // timestamp when speech started
-  const isRecordingRef   = useRef(false);     // sync ref for callbacks
+  const vadTimerRef      = useRef(null);
+  const speechStartRef   = useRef(null);
+  const isRecordingRef   = useRef(false);
   const quizActiveRef    = useRef(null);
   const convHistRef      = useRef([]);
   const profileRef       = useRef(studentProfile);
@@ -129,6 +136,7 @@ export default function App() {
   useEffect(() => { quizActiveRef.current = quizActive; }, [quizActive]);
   useEffect(() => { convHistRef.current = conversationHistory; }, [conversationHistory]);
   useEffect(() => { profileRef.current = studentProfile; }, [studentProfile]);
+
   useEffect(() => {
     const detectVoice = () => {
       const voices = window.speechSynthesis.getVoices();
@@ -162,19 +170,13 @@ export default function App() {
   const stopMouthAnim = () => { clearInterval(mouthIntervalRef.current); setMouthOpen(false); };
 
   const speak = useCallback((text, onEnd) => {
-  speakBrowser(text, onEnd);
-
-
-
-
-
+    speakBrowser(text, onEnd);
   }, []);
 
   const stopSpeaking = useCallback(() => {
     window.speechSynthesis.cancel();
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
-      currentAudioRef.current.currentTime = 0;
       currentAudioRef.current = null;
     }
   }, []);
@@ -186,9 +188,10 @@ export default function App() {
   };
 
   const addNewWords = useCallback((words) => {
+    if (!words || !words.length) return;
     setFlashcards(prev => {
       const existing = prev.map(f => f.word.toLowerCase());
-      const newOnes = words.filter(w => !existing.includes(w.word.toLowerCase()));
+      const newOnes = words.filter(w => w.word && !existing.includes(w.word.toLowerCase()));
       if (!newOnes.length) return prev;
       const updated = [...prev, ...newOnes.map(w => ({ ...w, learned: new Date().toISOString(), needsReview: false }))];
       localStorage.setItem("sarahCards", JSON.stringify(updated));
@@ -210,21 +213,26 @@ export default function App() {
   };
 
   const processResponse = useCallback((text, history, profile) => {
-    let parsed; try { parsed = JSON.parse(text); } catch { parsed = { message:text, newWords:[], emotion:"neutral" }; }
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch { parsed = { message: text, newWords:[], emotion:"neutral", correction:null, wrapUp:false, wrapUpWords:[] }; }
     setMessages(prev => [...prev, { role:"sarah", ...parsed }]);
     const newHist = [...history, { role:"assistant", content:text }];
     setConversationHistory(newHist); convHistRef.current = newHist;
     if (parsed.emotion) setEmotion(parsed.emotion);
     if (parsed.newWords?.length) addNewWords(parsed.newWords);
-    // Wrap-up: also import wrapUpWords into flashcards
     if (parsed.wrapUp && parsed.wrapUpWords?.length) addNewWords(parsed.wrapUpWords);
     if (parsed.needsReview && parsed.reviewWord) {
-      setReviewList(prev => { if (prev.find(r=>r.word===parsed.reviewWord)) return prev; const u=[...prev,{word:parsed.reviewWord,needsReview:true}]; localStorage.setItem("sarahReview",JSON.stringify(u)); return u; });
-      setFlashcards(prev => { const u=prev.map(f=>f.word===parsed.reviewWord?{...f,needsReview:true}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
+      setReviewList(prev => {
+        if (prev.find(r => r.word === parsed.reviewWord)) return prev;
+        const u = [...prev, { word:parsed.reviewWord, needsReview:true }];
+        localStorage.setItem("sarahReview", JSON.stringify(u)); return u;
+      });
+      setFlashcards(prev => { const u = prev.map(f => f.word===parsed.reviewWord?{...f,needsReview:true}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
     }
-    if (parsed.quizResult==="correct" && quizActiveRef.current) {
-      setReviewList(prev => { const u=prev.filter(r=>r.word!==quizActiveRef.current); localStorage.setItem("sarahReview",JSON.stringify(u)); return u; });
-      setFlashcards(prev => { const u=prev.map(f=>f.word===quizActiveRef.current?{...f,needsReview:false}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
+    if (parsed.quizResult === "correct" && quizActiveRef.current) {
+      setReviewList(prev => { const u = prev.filter(r=>r.word!==quizActiveRef.current); localStorage.setItem("sarahReview",JSON.stringify(u)); return u; });
+      setFlashcards(prev => { const u = prev.map(f=>f.word===quizActiveRef.current?{...f,needsReview:false}:f); localStorage.setItem("sarahCards",JSON.stringify(u)); return u; });
     }
     if (parsed.quizWord) { setQuizActive(parsed.quizWord); quizActiveRef.current = parsed.quizWord; }
     else if (parsed.quizResult) { setQuizActive(null); quizActiveRef.current = null; }
@@ -234,17 +242,13 @@ export default function App() {
     setStudentProfile(np); profileRef.current = np; localStorage.setItem("sarahProfile", JSON.stringify(np));
   }, [addNewWords, speak]);
 
-  // ── VAD: submit whatever was captured ──
   const submitSpeech = useCallback(async () => {
     const final = liveTextRef.current.trim();
     setLiveText(""); liveTextRef.current = "";
     setVadState("idle");
     if (!final) return;
-
-    // Show user message
     setMessages(prev => [...prev, { role:"user", message:final }]);
     setLoading(true);
-
     const key = localStorage.getItem("sarahApiKey") || "";
     const fc = JSON.parse(localStorage.getItem("sarahCards")||"[]");
     const rl = JSON.parse(localStorage.getItem("sarahReview")||"[]");
@@ -254,13 +258,12 @@ export default function App() {
     try {
       const text = await callSarah(newHist, note, key);
       processResponse(text, newHist, sp);
-    } catch(e) {
+    } catch {
       setMessages(prev => [...prev, { role:"sarah", message:"Sorry, connection hiccup! Try again, eh? 😅" }]);
     }
     setLoading(false);
   }, [callSarah, processResponse]);
 
-  // ── Volume analyser tick ──
   const startVolAnalyser = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -275,16 +278,12 @@ export default function App() {
         analyserRef.current.getByteFrequencyData(data);
         const vol = Math.min(data.reduce((a,b)=>a+b,0)/data.length/40, 1);
         setVolumeLevel(vol);
-
-        // VAD: is user speaking right now?
         const isSpeaking = vol > 0.06;
         if (isSpeaking) {
           if (!speechStartRef.current) speechStartRef.current = Date.now();
-          // Reset silence timer on each active frame
           clearTimeout(vadTimerRef.current);
           setVadState("listening");
           vadTimerRef.current = setTimeout(() => {
-            // Silence detected — check we had enough speech
             const dur = speechStartRef.current ? Date.now() - speechStartRef.current : 0;
             if (dur >= MIN_SPEECH_MS && liveTextRef.current.trim()) {
               setVadState("sending");
@@ -307,21 +306,16 @@ export default function App() {
     setVolumeLevel(0);
   }, []);
 
-  // ── Start listening ──
   const startListening = useCallback(async () => {
     if (loading) return;
-    // If Sarah is speaking, interrupt her
     if (speaking) { stopSpeaking(); setSpeaking(false); stopMouthAnim(); }
-
     isRecordingRef.current = true;
     setRecording(true); setVadState("listening");
     setLiveText(""); liveTextRef.current = "";
     speechStartRef.current = null;
-
     await startVolAnalyser();
-
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert("请用 Safari 或 Chrome，才能使用语音识别"); isRecordingRef.current=false; setRecording(false); return; }
+    if (!SR) { alert("请用 Safari 或 Chrome"); isRecordingRef.current=false; setRecording(false); return; }
     const r = new SR();
     r.lang = "en-US"; r.continuous = true; r.interimResults = true;
     recognitionRef.current = r;
@@ -334,17 +328,11 @@ export default function App() {
       const t = final || interim;
       setLiveText(t); liveTextRef.current = t;
     };
-    r.onend = () => {
-      // Auto-restart if still recording (browser sometimes stops recognition)
-      if (isRecordingRef.current) {
-        try { r.start(); } catch {}
-      }
-    };
+    r.onend = () => { if (isRecordingRef.current) { try { r.start(); } catch {} } };
     r.onerror = () => {};
     try { r.start(); } catch {}
   }, [loading, speaking, stopSpeaking, startVolAnalyser]);
 
-  // ── Stop listening ──
   const stopListening = useCallback(() => {
     isRecordingRef.current = false;
     setRecording(false); setVadState("idle");
@@ -355,11 +343,9 @@ export default function App() {
     setLiveText(""); liveTextRef.current = "";
   }, [stopVolAnalyser]);
 
-  // ── Button tap: toggle or interrupt ──
   const handleMicTap = useCallback(() => {
     if (loading) return;
     if (recording) {
-      // Manual stop — send whatever we have
       const final = liveTextRef.current.trim();
       stopListening();
       if (final) {
@@ -372,7 +358,7 @@ export default function App() {
         const note = `[exchanges=${sp.exchanges+1}, learned:${fc.map(f=>f.word).join(",")||"none"}, review:${rl.map(r=>r.word).join(",")||"none"}]`;
         const newHist = [...convHistRef.current, { role:"user", content:final }];
         callSarah(newHist, note, key)
-          .then(text => { processResponse(text, newHist, sp); })
+          .then(text => processResponse(text, newHist, sp))
           .catch(() => setMessages(prev => [...prev, { role:"sarah", message:"Sorry, try again! 😅" }]))
           .finally(() => setLoading(false));
       }
@@ -389,13 +375,13 @@ export default function App() {
     const rl = JSON.parse(localStorage.getItem("sarahReview")||"[]");
     const sp = JSON.parse(localStorage.getItem("sarahProfile")||'{"level":"beginner","exchanges":0}');
     profileRef.current = sp;
-    const init = `Start a spoken conversation about "${topic.title}" (${topic.hint}). Level: ${sp.level}, exchanges: ${sp.exchanges}. Learned: ${fc.map(f=>f.word).join(", ")||"none"}. Review: ${rl.map(r=>r.word).join(", ")||"none"}. Keep it short and natural for speaking.`;
+    const init = `Start a casual conversation about "${topic.title}" (${topic.hint}). Open with ONE short question a Winnipeg local would genuinely ask. Be casual, be brief.`;
     const history = [{ role:"user", content:init }];
     try {
       const text = await callSarah(history, "", apiKey);
       processResponse(text, history, sp);
     } catch {
-      const fb = { role:"sarah", message:"Hey! I'm Sarah, ready to chat eh? 🍁", emotion:"happy" };
+      const fb = { role:"sarah", message:"Hey! So cold out there today eh? Anyway, what's up?", emotion:"happy" };
       setMessages([fb]); setSpeaking(true); startMouthAnim();
       speak(fb.message, () => { setSpeaking(false); stopMouthAnim(); });
     }
@@ -405,17 +391,10 @@ export default function App() {
   const displayCards = filterMode === "review" ? flashcards.filter(f=>f.needsReview) : flashcards;
   const todayTopic = TOPICS[new Date().getDay() % TOPICS.length];
   const emotionFilter = { neutral:"none", happy:"brightness(1.05) saturate(1.1)", excited:"brightness(1.1) saturate(1.2)", encouraging:"brightness(1.08)", thinking:"brightness(0.95) saturate(0.9)" };
-
-  // Mic button label
-  const micLabel = loading ? "Thinking..." : recording ? (vadState==="sending" ? "Sending..." : "● Tap to send") : speaking ? "Tap to interrupt" : "Tap to speak";
+  const micLabel = loading ? "Thinking..." : recording ? (vadState==="sending" ? "Sending..." : "● Tap to send now") : speaking ? "Tap to interrupt" : "Tap to speak";
   const micEmoji = loading ? "⏳" : recording ? "🎙️" : speaking ? "✋" : "🎤";
-  const micBg    = recording
-    ? "radial-gradient(circle at 40% 35%,#ff6b6b,#c8102e)"
-    : speaking
-    ? "linear-gradient(145deg,#2a4a8e,#1a3060)"
-    : loading
-    ? "rgba(200,16,46,0.25)"
-    : "linear-gradient(145deg,#e8182e,#a00020)";
+  const micBg = recording ? "radial-gradient(circle at 40% 35%,#ff6b6b,#c8102e)" : speaking ? "linear-gradient(145deg,#2a4a8e,#1a3060)" : loading ? "rgba(200,16,46,0.25)" : "linear-gradient(145deg,#e8182e,#a00020)";
+  const shortVoiceName = voiceName ? voiceName.replace(" (Enhanced)", "✨").replace(" (Premium)", "✨") : "";
 
   // ── API KEY ──
   if (!apiKey) return (
@@ -424,13 +403,10 @@ export default function App() {
         <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top"}} alt="Sarah"/>
       </div>
       <div style={{fontSize:"26px",fontWeight:"700",marginBottom:"4px"}}>Sarah</div>
-      <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"32px",letterSpacing:"2px",textTransform:"uppercase"}}>Winnipeg Casual English Coach</div>
+      <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"32px",letterSpacing:"2px",textTransform:"uppercase"}}>Winnipeg English Coach</div>
       <div style={{width:"100%",maxWidth:"360px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"24px",padding:"28px"}}>
         <div style={{fontSize:"14px",fontWeight:"600",marginBottom:"6px"}}>🔑 Anthropic API Key</div>
         <div style={{fontSize:"12px",color:"#7a8a9a",marginBottom:"8px",lineHeight:"1.6"}}>前往 <strong style={{color:"#4ECDC4"}}>console.anthropic.com</strong> 获取，只存本地。</div>
-        <div style={{fontSize:"11px",color:"#5a8a5a",background:"rgba(78,205,196,0.08)",border:"1px solid rgba(78,205,196,0.2)",borderRadius:"8px",padding:"7px 10px",marginBottom:"14px",lineHeight:"1.6"}}>
-          ✅ 同一个 Key 驱动对话 + Claude 真人语音
-        </div>
         <input type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveKey()} placeholder="sk-ant-api03-..." style={{width:"100%",background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:"12px",padding:"13px 15px",color:"#e8e0d0",fontSize:"13px",outline:"none",fontFamily:"monospace",marginBottom:"14px",boxSizing:"border-box"}}/>
         <button onClick={saveKey} style={{width:"100%",background:"linear-gradient(135deg,#c8102e,#ff4757)",border:"none",borderRadius:"12px",padding:"14px",color:"white",fontSize:"16px",fontWeight:"600",cursor:"pointer"}}>开始练习 🎤</button>
       </div>
@@ -447,7 +423,9 @@ export default function App() {
           </div>
           <div>
             <div style={{fontSize:"18px",fontWeight:"700"}}>Sarah</div>
-            <div style={{fontSize:"10px",color:"#4ECDC4",letterSpacing:"1.5px",textTransform:"uppercase"}}>Claude Voice · Toronto 🎤</div>
+            <div style={{fontSize:"10px",color:"#4ECDC4",letterSpacing:"1.5px",textTransform:"uppercase"}}>
+              {shortVoiceName ? `🔊 ${shortVoiceName} · Winnipeg` : "Winnipeg Coach 🍁"}
+            </div>
           </div>
         </div>
         <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
@@ -485,14 +463,13 @@ export default function App() {
   // ── CHAT ──
   if (screen === "chat") return (
     <div style={{height:"100dvh",display:"flex",flexDirection:"column",background:"#080c18",fontFamily:"Georgia,serif",color:"#e8e0d0",userSelect:"none"}}>
-      {/* Header */}
       <div style={{background:"rgba(255,255,255,0.03)",borderBottom:"1px solid rgba(255,255,255,0.07)",padding:"11px 15px",display:"flex",alignItems:"center",gap:"10px",flexShrink:0}}>
         <button onClick={()=>{stopSpeaking();stopListening();stopMouthAnim();setScreen("home");}} style={{background:"none",border:"none",color:"#7a8a9a",cursor:"pointer",fontSize:"20px",padding:"4px 8px 4px 0",WebkitTapHighlightColor:"transparent"}}>←</button>
         <div style={{position:"relative",flexShrink:0}}>
           <div style={{width:"44px",height:"44px",borderRadius:"50%",overflow:"hidden",border:`2px solid ${speaking?"#ff4757":recording?"#ff6b6b":"rgba(200,16,46,0.5)"}`,boxShadow:speaking||recording?"0 0 0 4px rgba(200,16,46,0.2)":"none",transition:"all 0.3s"}}>
             <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion],transition:"filter 0.5s"}} alt="Sarah"/>
           </div>
-          {speaking && <div style={{position:"absolute",bottom:"4px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"16px":"12px",height:mouthOpen?"8px":"3px",background:"rgba(180,80,80,0.85)",borderRadius:"0 0 8px 8px",transition:"all 0.18s",border:"1px solid rgba(255,255,255,0.3)"}}/>}
+          {speaking && <div style={{position:"absolute",bottom:"4px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"16px":"12px",height:mouthOpen?"8px":"3px",background:"rgba(180,80,80,0.85)",borderRadius:"0 0 8px 8px",transition:"all 0.18s"}}/>}
         </div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:"15px",fontWeight:"700"}}>Sarah</div>
@@ -503,12 +480,11 @@ export default function App() {
         <button onClick={()=>setScreen("flashcards")} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"14px",padding:"5px 11px",color:"#e8e0d0",cursor:"pointer",fontSize:"12px",flexShrink:0,WebkitTapHighlightColor:"transparent"}}>📇 {flashcards.length}</button>
       </div>
 
-      {/* Messages */}
       <div style={{flex:1,overflowY:"auto",padding:"14px 13px 8px",display:"flex",flexDirection:"column",gap:"12px"}}>
         {messages.map((msg,i)=>(
           <div key={i}>
             {msg.role==="sarah"?(
-              <div style={{display:"flex",gap:"8px",maxWidth:"90%"}}>
+              <div style={{display:"flex",gap:"8px",maxWidth:"92%"}}>
                 <div style={{width:"30px",height:"30px",borderRadius:"50%",overflow:"hidden",flexShrink:0,marginTop:"2px",border:"1.5px solid rgba(200,16,46,0.4)"}}>
                   <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top"}} alt="S"/>
                 </div>
@@ -517,11 +493,10 @@ export default function App() {
                     {msg.message}
                     <button onClick={()=>{stopSpeaking();setSpeaking(true);startMouthAnim();speak(msg.message,()=>{setSpeaking(false);stopMouthAnim();});}} style={{marginLeft:"8px",background:"none",border:"none",cursor:"pointer",fontSize:"13px",opacity:0.5,verticalAlign:"middle",WebkitTapHighlightColor:"transparent"}}>🔊</button>
                   </div>
-                  {msg.correction&&<div style={{marginTop:"6px",padding:"8px 12px",background:"rgba(255,165,0,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"13px",color:"#d4a843",lineHeight:"1.5"}}>💡 {msg.correction}</div>}
-                  {msg.teachingNote&&<div style={{marginTop:"5px",padding:"6px 10px",background:"rgba(255,230,109,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"12px",color:"#c8b87a"}}>💡 {msg.teachingNote}</div>}
+                  {msg.correction&&<div style={{marginTop:"6px",padding:"8px 12px",background:"rgba(255,200,50,0.08)",borderLeft:"3px solid #FFE66D",borderRadius:"0 8px 8px 0",fontSize:"13px",color:"#d4a843",lineHeight:"1.5"}}>💡 {msg.correction}</div>}
+                  {msg.newWords?.length>0&&<div style={{marginTop:"6px",display:"flex",flexWrap:"wrap",gap:"5px"}}>{msg.newWords.map((w,j)=><div key={j} style={{background:"rgba(78,205,196,0.12)",border:"1px solid rgba(78,205,196,0.3)",borderRadius:"14px",padding:"3px 10px",fontSize:"11px",color:"#4ECDC4"}}>✨ <strong>{w.word}</strong> — {w.definition}</div>)}</div>}
                   {msg.wrapUp&&msg.wrapUpWords?.length>0&&<div style={{marginTop:"8px",background:"rgba(78,205,196,0.06)",border:"1px solid rgba(78,205,196,0.2)",borderRadius:"10px",padding:"10px 12px"}}><div style={{fontSize:"11px",letterSpacing:"1px",color:"#4ECDC4",marginBottom:"6px",fontFamily:"monospace"}}>📦 SESSION WORDS</div>{msg.wrapUpWords.map((w,j)=><div key={j} style={{marginBottom:"5px",fontSize:"12px",color:"#a0c0b8"}}><strong style={{color:"#e8e0d0"}}>{w.word}</strong> <span style={{color:"#5a7a7a",fontSize:"11px"}}>[{w.type}]</span> — {w.definition}</div>)}</div>}
-                  {msg.newWords?.length>0&&<div style={{marginTop:"6px",display:"flex",flexWrap:"wrap",gap:"5px"}}>{msg.newWords.map((w,j)=><div key={j} style={{background:`${typeColor[w.type]||"#4ECDC4"}18`,border:`1px solid ${typeColor[w.type]||"#4ECDC4"}50`,borderRadius:"14px",padding:"3px 10px",fontSize:"11px",color:typeColor[w.type]||"#4ECDC4"}}>✨ <strong>{w.word}</strong> — {w.definition}</div>)}</div>}
-                  {msg.quizResult&&<div style={{marginTop:"5px",padding:"6px 10px",background:msg.quizResult==="correct"?"rgba(168,230,207,0.1)":"rgba(255,107,107,0.1)",border:`1px solid ${msg.quizResult==="correct"?"rgba(168,230,207,0.3)":"rgba(255,107,107,0.3)"}`,borderRadius:"8px",fontSize:"11px",color:msg.quizResult==="correct"?"#A8E6CF":"#FF6B6B"}}>{msg.quizResult==="correct"?"✅ Great!":msg.needsReview?"📌 Added to review!":"💪 Keep it up!"}</div>}
+                  {msg.quizResult&&<div style={{marginTop:"5px",padding:"6px 10px",background:msg.quizResult==="correct"?"rgba(168,230,207,0.1)":"rgba(255,107,107,0.1)",border:`1px solid ${msg.quizResult==="correct"?"rgba(168,230,207,0.3)":"rgba(255,107,107,0.3)"}`,borderRadius:"8px",fontSize:"11px",color:msg.quizResult==="correct"?"#A8E6CF":"#FF6B6B"}}>{msg.quizResult==="correct"?"✅ Nice!":msg.needsReview?"📌 Added to review!":"💪 Keep it up!"}</div>}
                 </div>
               </div>
             ):(
@@ -531,7 +506,6 @@ export default function App() {
             )}
           </div>
         ))}
-        {/* Live transcript bubble */}
         {recording && <div style={{display:"flex",justifyContent:"flex-end"}}>
           <div style={{background:"rgba(26,58,110,0.6)",borderRadius:"16px 4px 16px 16px",padding:"10px 14px",fontSize:"15px",lineHeight:"1.65",maxWidth:"78%",border:"1px dashed rgba(78,140,205,0.5)",color:liveText?"#e8e0d0":"#5a7aaa",fontStyle:liveText?"normal":"italic"}}>
             {liveText||"Listening..."}
@@ -542,48 +516,18 @@ export default function App() {
         <div ref={messagesEndRef}/>
       </div>
 
-      {/* Controls */}
       <div style={{flexShrink:0,paddingTop:"14px",paddingBottom:"max(24px, env(safe-area-inset-bottom))",paddingLeft:"20px",paddingRight:"20px",display:"flex",flexDirection:"column",alignItems:"center",gap:"10px",background:"rgba(0,0,0,0.4)",borderTop:"1px solid rgba(255,255,255,0.06)"}}>
-        {/* Sarah speaking: large avatar */}
         {speaking && <div style={{position:"relative",width:"72px",height:"72px",borderRadius:"50%",overflow:"hidden",border:"3px solid #ff4757",boxShadow:"0 0 0 6px rgba(200,16,46,0.2)"}}>
           <img src={SARAH_PHOTO} style={{width:"100%",height:"100%",objectFit:"cover",objectPosition:"center top",filter:emotionFilter[emotion]}} alt="Sarah"/>
           <div style={{position:"absolute",bottom:"9px",left:"50%",transform:"translateX(-50%)",width:mouthOpen?"20px":"13px",height:mouthOpen?"9px":"3px",background:"rgba(160,60,60,0.9)",borderRadius:"0 0 10px 10px",transition:"all 0.18s"}}/>
         </div>}
-
         {quizActive&&!recording&&!loading&&!speaking&&<div style={{padding:"5px 14px",background:"rgba(78,205,196,0.1)",border:"1px solid rgba(78,205,196,0.25)",borderRadius:"18px",fontSize:"12px",color:"#4ECDC4"}}>🎯 Say <strong>"{quizActive}"</strong></div>}
-
-        {/* Volume wave */}
         <div style={{height:"24px",display:"flex",alignItems:"center",gap:"3px",opacity:recording?1:0,transition:"opacity 0.3s"}}>
-          {Array.from({length:18}).map((_,i)=>{
-            const c=Math.abs(i-8.5)/8.5;
-            const h=recording?Math.max(3,(1-c*0.4)*volumeLevel*26+Math.random()*3+2):3;
-            return <div key={i} style={{width:"3px",borderRadius:"2px",background:vadState==="sending"?"#4ECDC4":`hsl(${350+volumeLevel*20},80%,60%)`,height:`${h}px`,transition:"height 0.07s"}}/>;
-          })}
+          {Array.from({length:18}).map((_,i)=>{const c=Math.abs(i-8.5)/8.5;const h=recording?Math.max(3,(1-c*0.4)*volumeLevel*26+Math.random()*3+2):3;return<div key={i} style={{width:"3px",borderRadius:"2px",background:vadState==="sending"?"#4ECDC4":`hsl(${350+volumeLevel*20},80%,60%)`,height:`${h}px`,transition:"height 0.07s"}}/>;} )}
         </div>
-
-        {/* Big mic button — tap to toggle */}
-        <div
-          onClick={handleMicTap}
-          style={{
-            width:"84px", height:"84px", borderRadius:"50%",
-            background: micBg,
-            display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:"36px",
-            cursor: loading ? "not-allowed" : "pointer",
-            boxShadow: recording
-              ? `0 0 0 ${6+volumeLevel*14}px rgba(200,16,46,0.2),0 0 0 ${12+volumeLevel*24}px rgba(200,16,46,0.08),0 8px 28px rgba(200,16,46,0.5)`
-              : speaking
-              ? "0 0 0 6px rgba(30,60,140,0.3),0 8px 20px rgba(30,60,140,0.4)"
-              : "0 6px 26px rgba(200,16,46,0.5),inset 0 1px 0 rgba(255,255,255,0.2)",
-            transition:"box-shadow 0.1s,background 0.2s,transform 0.1s",
-            transform: recording ? "scale(1.04)" : "scale(1)",
-            WebkitTapHighlightColor:"transparent",
-            touchAction:"manipulation"
-          }}
-        >
+        <div onClick={handleMicTap} style={{width:"84px",height:"84px",borderRadius:"50%",background:micBg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"36px",cursor:loading?"not-allowed":"pointer",boxShadow:recording?`0 0 0 ${6+volumeLevel*14}px rgba(200,16,46,0.2),0 0 0 ${12+volumeLevel*24}px rgba(200,16,46,0.08),0 8px 28px rgba(200,16,46,0.5)`:speaking?"0 0 0 6px rgba(30,60,140,0.3),0 8px 20px rgba(30,60,140,0.4)":"0 6px 26px rgba(200,16,46,0.5),inset 0 1px 0 rgba(255,255,255,0.2)",transition:"box-shadow 0.1s,background 0.2s,transform 0.1s",transform:recording?"scale(1.04)":"scale(1)",WebkitTapHighlightColor:"transparent",touchAction:"manipulation"}}>
           {micEmoji}
         </div>
-
         <div style={{fontSize:"11px",color:recording?"#ff6b6b":speaking?"#7a9aff":"#4a5a6a",letterSpacing:"1px",textTransform:"uppercase",fontFamily:"monospace",transition:"color 0.3s"}}>
           {micLabel}
         </div>
@@ -607,12 +551,12 @@ export default function App() {
         {["all","review"].map(mode=><button key={mode} onClick={()=>setFilterMode(mode)} style={{background:filterMode===mode?"rgba(200,16,46,0.2)":"rgba(255,255,255,0.04)",border:`1px solid ${filterMode===mode?"rgba(200,16,46,0.5)":"rgba(255,255,255,0.1)"}`,borderRadius:"18px",padding:"6px 14px",color:filterMode===mode?"#ff4757":"#7a8a9a",cursor:"pointer",fontSize:"12px",fontFamily:"inherit",WebkitTapHighlightColor:"transparent"}}>{mode==="all"?`All (${flashcards.length})`:`Review (${reviewList.length})`}</button>)}
       </div>
       <div style={{flex:1,overflowY:"auto",padding:"0 14px 28px"}}>
-        {displayCards.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#5a6a7a"}}><div style={{fontSize:"48px",marginBottom:"14px"}}>{filterMode==="review"?"🎉":"📭"}</div><div style={{fontSize:"15px",marginBottom:"7px"}}>{filterMode==="review"?"Nothing to review!":"No cards yet"}</div><div style={{fontSize:"12px"}}>{filterMode==="review"?"Great job!":"Talk with Sarah to learn words."}</div></div>:(
+        {displayCards.length===0?<div style={{textAlign:"center",padding:"60px 20px",color:"#5a6a7a"}}><div style={{fontSize:"48px",marginBottom:"14px"}}>{filterMode==="review"?"🎉":"📭"}</div><div style={{fontSize:"15px",marginBottom:"7px"}}>{filterMode==="review"?"Nothing to review!":"No cards yet"}</div><div style={{fontSize:"12px"}}>{filterMode==="review"?"Nice work!":"Chat with Sarah to start learning."}</div></div>:(
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
             {displayCards.map((card,i)=>(
               <div key={i} onClick={()=>setFlippedCard(flippedCard===i?null:i)} style={{background:flippedCard===i?"rgba(255,255,255,0.07)":"rgba(255,255,255,0.03)",border:`1px solid ${card.needsReview?"rgba(255,107,107,0.4)":"rgba(255,255,255,0.08)"}`,borderRadius:"14px",padding:"14px",cursor:"pointer",minHeight:"110px",display:"flex",flexDirection:"column",position:"relative",WebkitTapHighlightColor:"transparent"}}>
                 {card.needsReview&&<div style={{position:"absolute",top:"8px",right:"8px",background:"#FF6B6B",borderRadius:"50%",width:"7px",height:"7px"}}/>}
-                <div style={{display:"inline-block",padding:"2px 7px",borderRadius:"8px",background:`${typeColor[card.type]||"#4ECDC4"}20`,color:typeColor[card.type]||"#4ECDC4",fontSize:"9px",letterSpacing:"1px",textTransform:"uppercase",marginBottom:"7px",fontFamily:"monospace",alignSelf:"flex-start"}}>{card.type?.replace("_"," ")||"word"}</div>
+                <div style={{display:"inline-block",padding:"2px 7px",borderRadius:"8px",background:"rgba(78,205,196,0.15)",color:"#4ECDC4",fontSize:"9px",letterSpacing:"1px",textTransform:"uppercase",marginBottom:"7px",fontFamily:"monospace",alignSelf:"flex-start"}}>{card.type?.replace("_"," ")||"word"}</div>
                 <div style={{fontSize:"15px",fontWeight:"700",marginBottom:"5px"}}>{card.word}</div>
                 {flippedCard===i?<div><div style={{fontSize:"12px",color:"#a0b0c0",marginBottom:"6px",lineHeight:"1.5"}}>{card.definition}</div><div style={{fontSize:"11px",color:"#5a7a8a",fontStyle:"italic",lineHeight:"1.5"}}>"{card.example}"</div><button onClick={e=>{e.stopPropagation();speak(card.word+". "+card.example,null);}} style={{marginTop:"8px",background:"rgba(255,255,255,0.08)",border:"none",borderRadius:"8px",padding:"4px 10px",color:"#a0b0c0",fontSize:"11px",cursor:"pointer",fontFamily:"inherit",WebkitTapHighlightColor:"transparent"}}>🔊 Listen</button></div>:<div style={{fontSize:"11px",color:"#4a5a6a"}}>Tap to reveal</div>}
               </div>

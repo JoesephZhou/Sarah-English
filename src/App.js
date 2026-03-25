@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 
 const SARAH_PHOTO = process.env.PUBLIC_URL + "/sarah.jpg";
 
@@ -60,34 +60,41 @@ const MIN_SPEECH_MS = 400;
 
 const speakBrowser = (text, onEnd) => {
   window.speechSynthesis.cancel();
-  const trySpeak = () => {
+  const doSpeak = (voices) => {
     const utt = new SpeechSynthesisUtterance(text);
     utt.volume = 1;
-    const voices = window.speechSynthesis.getVoices();
     const pick =
       voices.find(v => v.name === "Samantha (Enhanced)") ||
       voices.find(v => v.name === "Samantha") ||
-      voices.find(v => v.name.includes("Siri") && v.lang.startsWith("en")) ||
-      voices.find(v => v.lang === "en-CA") ||
-      voices.find(v => v.lang.startsWith("en-") && v.localService) ||
+      voices.find(v => /siri/i.test(v.name) && v.lang.startsWith("en")) ||
+      voices.find(v => v.lang === "en-CA" && v.localService) ||
+      voices.find(v => v.lang === "en-US" && v.localService) ||
+      voices.find(v => v.lang.startsWith("en") && v.localService) ||
       voices.find(v => v.lang.startsWith("en"));
-    if (pick) {
-      utt.voice = pick;
-      utt.lang = pick.lang;
-    } else {
-      utt.lang = "en-CA";
-    }
-    const name = pick ? pick.name : "";
-    utt.rate = name.includes("Enhanced") ? 0.92 : name.includes("Samantha") ? 0.90 : 0.88;
-    utt.pitch = name.includes("Siri") ? 1.0 : 1.05;
+    if (pick) { utt.voice = pick; utt.lang = pick.lang; }
+    else { utt.lang = "en-US"; }
+    utt.rate = (pick && pick.name.includes("Enhanced")) ? 0.93 : 0.90;
+    utt.pitch = 1.0;
     utt.onend = () => { if (onEnd) onEnd(); };
     utt.onerror = () => { if (onEnd) onEnd(); };
     window.speechSynthesis.speak(utt);
   };
-  if (window.speechSynthesis.getVoices().length > 0) {
-    trySpeak();
+  const v = window.speechSynthesis.getVoices();
+  if (v.length > 0) {
+    doSpeak(v);
   } else {
-    window.speechSynthesis.onvoiceschanged = () => { trySpeak(); };
+    window.speechSynthesis.onvoiceschanged = () => {
+      const v2 = window.speechSynthesis.getVoices();
+      if (v2.length > 0) doSpeak(v2);
+    };
+    setTimeout(() => {
+      const v3 = window.speechSynthesis.getVoices();
+      if (v3.length > 0) { doSpeak(v3); return; }
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.lang = "en-US"; utt.rate = 0.90;
+      utt.onend = () => { if (onEnd) onEnd(); };
+      window.speechSynthesis.speak(utt);
+    }, 1000);
   }
 };
 

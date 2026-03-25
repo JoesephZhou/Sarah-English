@@ -48,43 +48,27 @@ const VAD_SILENCE_MS = 1500;
 // Minimum speech before we consider it worth sending
 const MIN_SPEECH_MS = 400;
 
-const speakAnthropic = async (text, apiKey, onEnd) => {
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/audio/speech", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: JSON.stringify({ model: "tts-1", voice: "en-US-luna", input: text, speed: 0.95 })
-    });
-    if (!res.ok) throw new Error(`TTS ${res.status}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    audio.onended = () => { URL.revokeObjectURL(url); if (onEnd) onEnd(); };
-    audio.onerror  = () => { URL.revokeObjectURL(url); if (onEnd) onEnd(); };
-    await audio.play();
-    return audio;
-  } catch(e) {
-    console.warn("TTS fallback:", e);
-    speakFallback(text, onEnd);
-    return null;
-  }
-};
-
-const speakFallback = (text, onEnd) => {
+const speakBrowser = (text, onEnd) => {
   window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = "en-CA"; utt.rate = 0.92; utt.pitch = 1.05;
-  const v = window.speechSynthesis.getVoices().find(v =>
-    v.lang.startsWith("en") && (v.name.includes("Samantha") || v.name.includes("Karen") || v.name.includes("Fiona"))
-  );
-  if (v) utt.voice = v;
-  if (onEnd) utt.onend = onEnd;
-  window.speechSynthesis.speak(utt);
+  const trySpeak = () => {
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'en-CA'; utt.rate = 0.88; utt.pitch = 1.05; utt.volume = 1;
+    const voices = window.speechSynthesis.getVoices();
+    const v = voices.find(v => v.lang.startsWith('en') && (
+      v.name.includes('Samantha') || v.name.includes('Karen') ||
+      v.name.includes('Fiona') || v.name.includes('Moira') ||
+      v.name.includes('Victoria') || v.name.includes('Tessa')
+    )) || voices.find(v => v.lang.startsWith('en-CA')) || voices.find(v => v.lang.startsWith('en'));
+    if (v) utt.voice = v;
+    utt.onend = () => { if (onEnd) onEnd(); };
+    utt.onerror = () => { if (onEnd) onEnd(); };
+    window.speechSynthesis.speak(utt);
+  };
+  if (window.speechSynthesis.getVoices().length > 0) {
+    trySpeak();
+  } else {
+    window.speechSynthesis.onvoiceschanged = () => { trySpeak(); };
+  }
 };
 
 export default function App() {
@@ -150,12 +134,12 @@ export default function App() {
   const stopMouthAnim = () => { clearInterval(mouthIntervalRef.current); setMouthOpen(false); };
 
   const speak = useCallback((text, onEnd) => {
-    const key = localStorage.getItem("sarahApiKey") || "";
-    if (key) {
-      speakAnthropic(text, key, onEnd).then(a => { currentAudioRef.current = a; });
-    } else {
-      speakFallback(text, onEnd);
-    }
+  speakBrowser(text, onEnd);
+
+
+
+
+
   }, []);
 
   const stopSpeaking = useCallback(() => {

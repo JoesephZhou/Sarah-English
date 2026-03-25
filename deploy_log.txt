@@ -1,19 +1,15 @@
-npm warn cli npm v11.2.0 does not support Node.js v20.9.0. This version of npm supports the following node versions: `^20.17.0 || >=22.9.0`. You can find the latest version at https://nodejs.org/.
-
-> sarah-english@1.0.0 predeploy
-> npm run build
-
-npm warn cli npm v11.2.0 does not support Node.js v20.9.0. This version of npm supports the following node versions: `^20.17.0 || >=22.9.0`. You can find the latest version at https://nodejs.org/.
 
 > sarah-english@1.0.0 build
 > react-scripts build
 
+(node:14264) [DEP0176] DeprecationWarning: fs.F_OK is deprecated, use fs.constants.F_OK instead
+(Use `node --trace-deprecation ...` to show where the warning was created)
 Creating an optimized production build...
 Compiled successfully.
 
 File sizes after gzip:
 
-  54.04 kB (+204 B)  build\static\js\main.f7f1cb85.js
+  53.92 kB  build\static\js\main.9aaf91a0.js
 
 The project was built assuming it is hosted at /Sarah-English/.
 You can control this with the homepage field in your package.json.
@@ -23,9 +19,5 @@ The build folder is ready to be deployed.
 Find out more about deployment here:
 
   https://cra.link/deployment
-
-
-> sarah-english@1.0.0 deploy
-> gh-pages -d build
 
 Published
